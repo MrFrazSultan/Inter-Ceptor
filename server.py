@@ -1177,11 +1177,12 @@ function renderStatus(){
   const scriptDir=window.location.pathname.replace(/\/[^/]*$/,'') || '.';
   let cmdKill, cmdRestart;
   if(sys==='Windows'){
-    cmdKill=`taskkill /F /IM python.exe /FI "WINDOWTITLE eq server.py"`;
-    cmdRestart=`taskkill /F /IM python.exe /FI "WINDOWTITLE eq server.py" & python server.py`;
+    cmdKill=`taskkill /F /IM python.exe & for /f "tokens=5" %a in ('netstat -aon ^| findstr :4750') do taskkill /F /PID %a`;
+    cmdRestart=`taskkill /F /IM python.exe & for /f "tokens=5" %a in ('netstat -aon ^| findstr :4750') do taskkill /F /PID %a & timeout /t 1 & python server.py`;
   } else {
-    cmdKill=`pkill -f "python3 server.py"`;
-    cmdRestart=`pkill -f "python3 server.py"; sleep 1; cd "${ST.script_dir||'~/Downloads/req red'}" && python3 server.py &`;
+    const dir=ST.script_dir||'~/Downloads/req red';
+    cmdKill=`pkill -f "python3 server.py" 2>/dev/null; lsof -ti:4750 | xargs kill -9 2>/dev/null`;
+    cmdRestart=`pkill -f "python3 server.py" 2>/dev/null; lsof -ti:4750 | xargs kill -9 2>/dev/null; sleep 1; cd "${dir}" && python3 server.py &`;
   }
   document.getElementById('cmdKill').textContent=cmdKill;
   document.getElementById('cmdRestart').textContent=cmdRestart;
