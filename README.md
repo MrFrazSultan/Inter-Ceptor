@@ -22,19 +22,37 @@ Works on **macOS**, **Windows**, and **Linux**.
 
 ---
 
+## Free Alternative To
+
+Interceptor is a **100% free, open-source** alternative to these paid tools:
+
+| Tool | Price | Interceptor advantage |
+|---|---|---|
+| [Requestly](https://requestly.io) | $15/user/month | Free forever, no browser extension needed, works system-wide |
+| [Charles Proxy](https://www.charlesproxy.com) | $50 one-time | Free, selective MITM so cert-pinned apps don't break |
+| [Proxyman](https://proxyman.io) | $69 one-time | Free, cross-platform (Proxyman is macOS-only) |
+| [Fiddler Everywhere](https://www.telerik.com/fiddler) | $9–$35/user/month | Free, no subscription, no account required |
+| [HTTP Toolkit](https://httptoolkit.com) | Freemium (advanced features paid) | Free including advanced features like GraphQL matching and dynamic mocks |
+
+All the core features — redirect, block, mock, GraphQL matching, system proxy management, real-time request log — are free with no paywalls, no account, no telemetry.
+
+---
+
 ## Why Interceptor?
 
 Most proxy tools intercept everything. That breaks services that pin certificates (Slack, Dropbox, etc.) and slows everything down. Interceptor only MITM's the specific hosts you target — everything else is an opaque TCP tunnel.
 
-| Feature | Interceptor | Charles | mitmproxy CLI |
-|---|---|---|---|
-| Web UI | ✅ | ✅ | ❌ |
-| Selective MITM (rules-only) | ✅ | ❌ | ❌ |
-| Auto system proxy on/off | ✅ | ✅ | ❌ |
-| Mock with dynamic script | ✅ | ❌ | ❌ |
-| GraphQL matching | ✅ | ❌ | ❌ |
-| macOS + Windows + Linux | ✅ | ✅ | ✅ |
-| Free & open source | ✅ | ❌ | ✅ |
+| Feature | Interceptor | Requestly | Charles | Proxyman | Fiddler Everywhere |
+|---|---|---|---|---|---|
+| Price | **Free** | $15/user/mo | $50 | $69 | $9–35/user/mo |
+| Web UI | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Selective MITM (rules-only) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Auto system proxy on/off | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Mock with dynamic script | ✅ | ✅ | ❌ | ❌ | ❌ |
+| GraphQL matching | ✅ | ✅ | ❌ | ❌ | ❌ |
+| macOS + Windows + Linux | ✅ | ✅ | ✅ | ❌ (macOS only) | ✅ |
+| Open source | ✅ | ✅ | ❌ | ❌ | ❌ |
+| No account required | ✅ | ❌ | ✅ | ✅ | ❌ |
 
 ---
 
