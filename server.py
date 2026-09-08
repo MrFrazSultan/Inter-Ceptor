@@ -569,13 +569,16 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:14px
 .chk-title{font-size:13px;font-weight:600}
 .chk-desc{font-size:11.5px;color:var(--fg2);margin-top:2px;font-family:var(--mono);word-break:break-all}
 .chk-act{flex-shrink:0;display:flex;flex-direction:column;align-items:flex-end;gap:6px}
-.manual-det{margin-top:6px;font-size:11px}
+.manual-det{margin-top:6px;font-size:11px;width:100%}
 .manual-det summary{cursor:pointer;color:var(--fg3);user-select:none;list-style:none;display:flex;align-items:center;gap:4px}
 .manual-det summary::before{content:'▶';font-size:8px;transition:transform .15s}
 .manual-det[open] summary::before{transform:rotate(90deg)}
 .manual-pre{margin:6px 0 0;padding:8px 10px;background:var(--bg);border:1px solid var(--bd);
   border-radius:6px;font-family:var(--mono);font-size:11px;white-space:pre;overflow-x:auto;
   color:var(--fg2);line-height:1.6}
+.copy-btn{margin-left:auto;font-size:10px;padding:2px 8px;border:1px solid var(--bd);
+  border-radius:4px;background:var(--sf2);color:var(--fg2);cursor:pointer;flex-shrink:0}
+.copy-btn:hover{background:var(--bd);color:var(--fg)}
 @media(max-width:480px){
   .chk-item{grid-template-columns:22px 1fr;gap:10px}
   .chk-act{grid-column:2;margin-top:4px;align-items:flex-start}
@@ -1197,10 +1200,21 @@ function setChk(id,ok,desc,act,manual){
   el.querySelector('.chk-icon').textContent=ok===true?'✓':ok===false?'✗':'○';
   document.getElementById('ci-'+id+'-d').textContent=desc;
   const a=document.getElementById('ci-'+id+'-a');
+  // preserve whether the manual details was open before rebuilding
+  const wasOpen=a.querySelector('.manual-det')?.open||false;
   const btn=act?`<button class="btn btn-sm ${act.primary?'btn-ac':'btn-ghost'}"
     onclick="${act.fn}">${act.label}</button>`:(ok===true?'<span class="badge bg-gr">OK</span>':'');
-  const man=manual?`<details class="manual-det"><summary>Manual command</summary><pre class="manual-pre">${esc(manual)}</pre></details>`:'';
+  const man=manual?`<details class="manual-det"${wasOpen?' open':''}><summary>Manual command
+    <button class="copy-btn" onclick="event.stopPropagation();copyCmd(this)">Copy</button>
+    </summary><pre class="manual-pre">${esc(manual)}</pre></details>`:'';
   a.innerHTML=btn+man;
+}
+async function copyCmd(btn){
+  const pre=btn.closest('.manual-det').querySelector('.manual-pre');
+  try{
+    await navigator.clipboard.writeText(pre.textContent);
+    btn.textContent='✓ Copied';setTimeout(()=>btn.textContent='Copy',1800);
+  }catch{btn.textContent='Copy';}
 }
 const CERT_PATH='~/.mitmproxy/mitmproxy-ca-cert.pem';
 
