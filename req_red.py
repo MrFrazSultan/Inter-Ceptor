@@ -464,8 +464,8 @@ def main():
     allow_hosts = extract_allow_hosts(all_rules)
 
     if not allow_hosts:
-        print("WARNING: no target hosts — all traffic would be intercepted. Refusing.")
-        sys.exit(1)
+        print("INFO: no active rules — proxy will start but intercept nothing until rules are added.")
+        allow_hosts = ["^$"]  # matches no host; safe to run
 
     use_sys = not args.no_system_proxy
     if use_sys:
