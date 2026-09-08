@@ -384,16 +384,23 @@ def install_ca_cert():
         print("CA cert not found — start proxy once first.")
         return False
     if sys.platform == "darwin":
-        escaped = str(CERT_PATH).replace('"', '\\"')
-        cmd = (f'security add-trusted-cert -d -r trustRoot '
-               f'-k /Library/Keychains/System.keychain "{escaped}"')
-        r = subprocess.run(["osascript", "-e",
-                            f'do shell script "{cmd}" with administrator privileges'],
-                           capture_output=True, text=True)
+        script = (
+            f'set certPath to "{str(CERT_PATH)}"\n'
+            'do shell script "security add-trusted-cert -d -r trustRoot '
+            '-k /Library/Keychains/System.keychain " & quoted form of certPath '
+            'with administrator privileges'
+        )
+        r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"cert install failed: {r.stderr.strip()}")
         return r.returncode == 0
     if sys.platform == "win32":
-        r = subprocess.run(["certutil", "-addstore", "-f", "Root", str(CERT_PATH)],
-                           capture_output=True, text=True)
+        cert = str(CERT_PATH).replace("'", "`'")
+        ps = (f"Start-Process certutil "
+              f"-ArgumentList '-addstore','-f','Root','{cert}' "
+              f"-Verb RunAs -Wait")
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                           capture_output=True, text=True, timeout=60)
         if r.returncode != 0:
             print(f"certutil failed: {r.stderr.strip()}")
         return r.returncode == 0

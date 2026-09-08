@@ -234,33 +234,49 @@ def _install_cert():
     if not CERT_PATH.exists():
         return False,"CA cert not found — generate it first."
     if SYSTEM=="Darwin":
-        esc=str(CERT_PATH).replace('"','\\"')
-        cmd=(f'security add-trusted-cert -d -r trustRoot '
-             f'-k /Library/Keychains/System.keychain "{esc}"')
-        r=subprocess.run(["osascript","-e",
-                          f'do shell script "{cmd}" with administrator privileges'],
-                         capture_output=True,text=True)
+        # Use AppleScript variable + quoted form of to avoid any quoting issues in the shell cmd
+        script=(
+            f'set certPath to "{str(CERT_PATH)}"\n'
+            'do shell script "security add-trusted-cert -d -r trustRoot '
+            '-k /Library/Keychains/System.keychain " & quoted form of certPath '
+            'with administrator privileges'
+        )
+        r=subprocess.run(["osascript","-e",script],capture_output=True,text=True)
         if r.returncode==0: return True,"Certificate installed to System keychain."
-        return False,(r.stderr.strip() or "Authentication cancelled.")
+        err=r.stderr.strip()
+        if "cancelled" in err.lower() or "-128" in err:
+            return False,"Authentication cancelled — please try again and enter your password."
+        return False,(err or "osascript failed — check System Preferences > Security.")
     if SYSTEM=="Windows":
-        r=subprocess.run(["certutil","-addstore","-f","Root",str(CERT_PATH)],
-                         capture_output=True,text=True)
+        # Elevate via PowerShell RunAs so Windows shows the UAC prompt
+        cert=str(CERT_PATH).replace("'","`'")
+        ps=(f"Start-Process certutil "
+            f"-ArgumentList '-addstore','-f','Root','{cert}' "
+            f"-Verb RunAs -Wait")
+        r=subprocess.run(["powershell","-NoProfile","-Command",ps],
+                         capture_output=True,text=True,timeout=60)
         if r.returncode==0: return True,"Certificate installed to Windows Root store."
-        return False,(r.stderr.strip() or "certutil failed — try running as Administrator.")
-    # Linux
-    import shutil as _sh
-    for dest,cmd in [
-        (Path("/usr/local/share/ca-certificates/mitmproxy-ca.crt"), ["sudo","update-ca-certificates"]),
-        (Path("/etc/pki/ca-trust/source/anchors/mitmproxy-ca.crt"), ["sudo","update-ca-trust","extract"]),
+        return False,(r.stderr.strip() or "UAC prompt cancelled or certutil failed.")
+    # Linux — try pkexec (GUI password prompt) then fall back to sudo
+    import shutil as _sh, shlex as _sx
+    for dest,update_cmd in [
+        (Path("/usr/local/share/ca-certificates/mitmproxy-ca.crt"), "update-ca-certificates"),
+        (Path("/etc/pki/ca-trust/source/anchors/mitmproxy-ca.crt"), "update-ca-trust extract"),
     ]:
         try:
-            dest.parent.mkdir(parents=True,exist_ok=True)
-            _sh.copy2(CERT_PATH,dest)
-            r=subprocess.run(cmd,capture_output=True,text=True,timeout=15)
+            shell_cmd=f"cp {_sx.quote(str(CERT_PATH))} {_sx.quote(str(dest))} && {update_cmd}"
+            # pkexec shows a native GUI auth dialog on GNOME/KDE
+            r=subprocess.run(["pkexec","sh","-c",shell_cmd],
+                             capture_output=True,text=True,timeout=30)
             if r.returncode==0: return True,f"Certificate installed ({dest})"
+            # fall back to sudo (works in terminals)
+            r2=subprocess.run(["sudo","sh","-c",shell_cmd],
+                              capture_output=True,text=True,timeout=30)
+            if r2.returncode==0: return True,f"Certificate installed ({dest})"
         except Exception:
             continue
-    manual=f"sudo cp {CERT_PATH} /usr/local/share/ca-certificates/mitmproxy.crt && sudo update-ca-certificates"
+    manual=(f"sudo cp {CERT_PATH} /usr/local/share/ca-certificates/mitmproxy.crt "
+            f"&& sudo update-ca-certificates")
     return False,f"Auto-install failed. Run manually:\n{manual}"
 
 # ── SSE helper ────────────────────────────────────────────────────────────────
