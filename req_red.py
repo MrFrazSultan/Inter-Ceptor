@@ -1,0 +1,416 @@
+#!/usr/bin/env python3
+"""
+req-red proxy — system-wide HTTPS interceptor.
+Managed by server.py; can also run standalone.
+
+Rule schema (new):
+  { id, name, enabled, priority,
+    match: { url: {kind, value}, method?, graphql?: {operationName?, payloadKey?, payloadValue?} },
+    action: RedirectAction | BlockAction | MockAction }
+
+RedirectAction : { type:"redirect", to:str }
+BlockAction    : { type:"block" }
+MockAction     : { type:"mock", status:int, headers:{}, body:str, bodyMode:"static"|"dynamic",
+                   script:str, delayMs:int }
+
+Old flat format is migrated transparently on load.
+"""
+
+import asyncio
+import atexit
+import fnmatch
+import json
+import logging
+import os
+import re
+import signal
+import socket
+import subprocess
+import sys
+import time
+import urllib.parse
+from pathlib import Path
+from typing import List, Dict, Any, Optional
+
+PORT_HINT  = 8080
+SCRIPT_DIR = Path(__file__).parent
+RULES_FILE = SCRIPT_DIR / "rules.json"
+
+# ─── dependency bootstrap ─────────────────────────────────────────────────────
+
+def _pip(*pkgs):
+    r = subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", *pkgs],
+                       capture_output=True)
+    if r.returncode != 0:
+        subprocess.run([sys.executable, "-m", "pip", "install", "--quiet",
+                        "--break-system-packages", *pkgs], check=True)
+
+try:
+    from mitmproxy import http
+    from mitmproxy.tools.dump import DumpMaster
+    from mitmproxy.options import Options
+except ImportError:
+    print("mitmproxy not found — installing…")
+    _pip("mitmproxy")
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+log = logging.getLogger("req-red")
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+# ─── rule schema migration ────────────────────────────────────────────────────
+
+_KIND_MAP = {
+    "equals": "exact", "contains": "contains", "startswith": "startswith",
+    "endswith": "endswith", "regex": "regex",
+}
+
+def migrate_rule(r: dict) -> dict:
+    """Convert old flat format → new nested schema in-place."""
+    if "match" in r:
+        return r
+    return {
+        "id":       r.get("id", ""),
+        "name":     r.get("name", "rule"),
+        "enabled":  r.get("enabled", True),
+        "priority": r.get("priority", 0),
+        "match": {
+            "url": {
+                "kind":  _KIND_MAP.get(r.get("match_type", "equals"), "exact"),
+                "value": r.get("target", ""),
+            }
+        },
+        "action": {"type": "redirect", "to": r.get("redirect", "")},
+    }
+
+def load_rules() -> List[dict]:
+    if RULES_FILE.exists():
+        try:
+            raw = json.loads(RULES_FILE.read_text())
+            rules = [migrate_rule(r) for r in raw]
+            rules.sort(key=lambda r: (r.get("priority", 0)))
+            return [r for r in rules if r.get("enabled", True)]
+        except Exception as e:
+            log.error(f"Could not load rules.json: {e}")
+    return []
+
+# ─── matching engine ──────────────────────────────────────────────────────────
+
+def _url_matches(url: str, m: dict) -> bool:
+    kind  = m.get("kind", "exact")
+    value = m.get("value", "")
+    if kind == "exact":       return url == value
+    if kind == "contains":    return value in url
+    if kind == "startswith":  return url.startswith(value)
+    if kind == "endswith":    return url.endswith(value)
+    if kind == "wildcard":    return fnmatch.fnmatch(url, value)
+    if kind == "regex":       return bool(re.search(value, url))
+    if kind == "domain":
+        host = urllib.parse.urlparse(url).hostname or ""
+        if value.startswith("*."):
+            d = value[2:]
+            return host == d or host.endswith("." + d)
+        return host == value
+    return False
+
+def _get_nested(obj: Any, path: str) -> Any:
+    """Traverse dot-notation path through a dict."""
+    for key in path.split("."):
+        if isinstance(obj, dict):
+            obj = obj.get(key)
+        else:
+            return None
+    return obj
+
+def _match_graphql(gql: dict, flow: http.HTTPFlow) -> bool:
+    try:
+        body = json.loads(flow.request.content)
+    except Exception:
+        return False
+    op = gql.get("operationName")
+    if op and body.get("operationName") != op:
+        return False
+    pk, pv = gql.get("payloadKey"), gql.get("payloadValue")
+    if pk:
+        actual = _get_nested(body, pk)
+        if pv and str(actual) != pv:
+            return False
+    return True
+
+def _rule_matches(rule: dict, flow: http.HTTPFlow) -> bool:
+    match = rule.get("match", {})
+    url_m = match.get("url", {})
+    if not _url_matches(flow.request.pretty_url, url_m):
+        return False
+    method = match.get("method")
+    if method and method.upper() != flow.request.method.upper():
+        return False
+    gql = match.get("graphql")
+    if gql and any(gql.values()):
+        if not _match_graphql(gql, flow):
+            return False
+    return True
+
+# ─── host extraction for allow_hosts ──────────────────────────────────────────
+
+def extract_allow_hosts(rules: List[dict]) -> List[str]:
+    hosts = set()
+    for rule in rules:
+        url_m = rule.get("match", {}).get("url", {})
+        kind  = url_m.get("kind", "exact")
+        value = url_m.get("value", "")
+        if kind in ("exact", "startswith", "contains", "endswith"):
+            h = urllib.parse.urlparse(value).hostname
+            if h:
+                hosts.add(re.escape(h))
+        elif kind == "domain":
+            d = value.lstrip("*.")
+            if d:
+                hosts.add(r"(?:.*\.)?" + re.escape(d))
+        elif kind == "wildcard":
+            h = urllib.parse.urlparse(value.replace("*", "")).hostname
+            if h:
+                hosts.add(re.escape(h))
+        elif kind == "regex":
+            if "host" in rule:
+                hosts.add(re.escape(rule["host"]))
+    return list(hosts)
+
+# ─── actions ──────────────────────────────────────────────────────────────────
+
+def _do_redirect(flow: http.HTTPFlow, to: str, name: str):
+    p = urllib.parse.urlparse(to)
+    flow.request.scheme = p.scheme
+    flow.request.host   = p.hostname
+    flow.request.port   = p.port or (443 if p.scheme == "https" else 80)
+    path = p.path or "/"
+    if p.query:
+        path += "?" + p.query
+    flow.request.path = path
+    flow.request.headers["host"] = p.netloc
+
+def _do_block(flow: http.HTTPFlow):
+    flow.response = http.Response.make(
+        403, b'{"error":"blocked by req-red"}',
+        {"Content-Type": "application/json", "X-Blocked-By": "req-red"},
+    )
+
+def _do_mock(flow: http.HTTPFlow, action: dict):
+    delay = action.get("delayMs", 0)
+    if delay and delay > 0:
+        time.sleep(delay / 1000)
+
+    body: str = action.get("body", "")
+    if action.get("bodyMode") == "dynamic":
+        body = _run_script(action.get("script", ""), flow)
+
+    raw = body.encode("utf-8") if isinstance(body, str) else body
+    headers = dict(action.get("headers") or {})
+    if "Content-Type" not in headers:
+        try:
+            json.loads(body)
+            headers["Content-Type"] = "application/json"
+        except Exception:
+            headers["Content-Type"] = "text/plain"
+
+    flow.response = http.Response.make(
+        action.get("status", 200), raw, headers,
+    )
+
+def _run_script(script: str, flow: http.HTTPFlow) -> str:
+    """Execute JS script via Node.js to generate mock body."""
+    args = json.dumps({
+        "method":         flow.request.method,
+        "url":            flow.request.pretty_url,
+        "requestHeaders": dict(flow.request.headers),
+        "requestBody":    flow.request.content.decode("utf-8", errors="replace"),
+    })
+    node_src = f"""
+const args = {args};
+{script}
+const r = typeof modifyResponse === 'function' ? modifyResponse(args) : null;
+if (r === null || r === undefined) process.stdout.write('');
+else if (typeof r === 'string') process.stdout.write(r);
+else process.stdout.write(JSON.stringify(r));
+"""
+    try:
+        res = subprocess.run(["node", "-e", node_src],
+                             capture_output=True, text=True, timeout=5)
+        if res.returncode == 0:
+            return res.stdout
+        log.error(f"[req-red] script stderr: {res.stderr.strip()}")
+        return json.dumps({"error": res.stderr.strip()})
+    except FileNotFoundError:
+        return json.dumps({"error": "Node.js not installed — required for dynamic scripts"})
+    except subprocess.TimeoutExpired:
+        return json.dumps({"error": "Script execution timed out (5s)"})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+# ─── structured request log ───────────────────────────────────────────────────
+
+def _emit_request(flow: http.HTTPFlow, rule: Optional[dict], action_type: str,
+                  status: Optional[int] = None):
+    entry = {
+        "__reqlog__": True,
+        "ts":         int(time.time() * 1000),
+        "method":     flow.request.method,
+        "url":        flow.request.pretty_url,
+        "rule_id":    rule["id"]   if rule else None,
+        "rule_name":  rule["name"] if rule else None,
+        "action":     action_type,
+        "status":     status,
+    }
+    print(json.dumps(entry), flush=True)
+
+# ─── mitmproxy addon ──────────────────────────────────────────────────────────
+
+class ReqRedAddon:
+    def __init__(self, rules: List[dict]):
+        self.rules = rules
+
+    def request(self, flow: http.HTTPFlow) -> None:
+        for rule in self.rules:
+            if not _rule_matches(rule, flow):
+                continue
+            action = rule.get("action", {})
+            atype  = action.get("type", "redirect")
+            name   = rule.get("name", "")
+            url    = flow.request.pretty_url
+
+            if atype == "redirect":
+                log.info(f"[req-red] [redirect] [{name}] {url}  →  {action.get('to','')}")
+                _do_redirect(flow, action.get("to", ""), name)
+                _emit_request(flow, rule, "redirect")
+
+            elif atype == "block":
+                log.info(f"[req-red] [block] [{name}] {url}")
+                _do_block(flow)
+                _emit_request(flow, rule, "block", 403)
+
+            elif atype == "mock":
+                log.info(f"[req-red] [mock] [{name}] {url}  →  {action.get('status',200)}")
+                _do_mock(flow, action)
+                _emit_request(flow, rule, "mock", action.get("status", 200))
+
+            return  # first matching rule wins
+
+# ─── system proxy ─────────────────────────────────────────────────────────────
+
+def _network_services() -> List[str]:
+    if sys.platform != "darwin":
+        return []
+    out = subprocess.run(["networksetup", "-listallnetworkservices"],
+                         capture_output=True, text=True).stdout
+    return [l.strip() for l in out.splitlines()[1:]
+            if l.strip() and not l.startswith("*")]
+
+def set_system_proxy(port: int):
+    svcs = _network_services()
+    if not svcs:
+        return
+    print(f"Setting system proxy (port {port}) on: {', '.join(svcs)}")
+    for svc in svcs:
+        subprocess.run(["networksetup", "-setwebproxy",            svc, "127.0.0.1", str(port)], check=True)
+        subprocess.run(["networksetup", "-setsecurewebproxy",      svc, "127.0.0.1", str(port)], check=True)
+        subprocess.run(["networksetup", "-setwebproxystate",       svc, "on"],                   check=True)
+        subprocess.run(["networksetup", "-setsecurewebproxystate", svc, "on"],                   check=True)
+
+def unset_system_proxy():
+    for svc in _network_services():
+        subprocess.run(["networksetup", "-setwebproxystate",       svc, "off"])
+        subprocess.run(["networksetup", "-setsecurewebproxystate", svc, "off"])
+    print("System proxy disabled.")
+
+# ─── port ────────────────────────────────────────────────────────────────────
+
+def find_free_port(start: int = PORT_HINT) -> int:
+    for p in range(start, start + 20):
+        with socket.socket() as s:
+            try:
+                s.bind(("", p)); return p
+            except OSError:
+                pass
+    raise RuntimeError("No free port found")
+
+# ─── CA cert ─────────────────────────────────────────────────────────────────
+
+CERT_PATH = Path.home() / ".mitmproxy" / "mitmproxy-ca-cert.pem"
+
+def install_ca_cert():
+    if not CERT_PATH.exists():
+        print("CA cert not found — start proxy once first.")
+        return False
+    if sys.platform == "darwin":
+        escaped = str(CERT_PATH).replace('"', '\\"')
+        cmd = (f'security add-trusted-cert -d -r trustRoot '
+               f'-k /Library/Keychains/System.keychain "{escaped}"')
+        r = subprocess.run(["osascript", "-e",
+                            f'do shell script "{cmd}" with administrator privileges'],
+                           capture_output=True, text=True)
+        return r.returncode == 0
+    return False
+
+# ─── runner ───────────────────────────────────────────────────────────────────
+
+async def _run(port: int, allow_hosts: List[str]):
+    opts = Options(
+        listen_host="0.0.0.0",
+        listen_port=port,
+        ssl_insecure=True,
+        allow_hosts=allow_hosts or ["^$"],  # block nothing if empty
+    )
+    master = DumpMaster(opts, with_termlog=True, with_dumper=False)
+    rules  = load_rules()
+    master.addons.add(ReqRedAddon(rules))
+    try:
+        await master.run()
+    except KeyboardInterrupt:
+        master.shutdown()
+
+def _banner(port, rules, allow_hosts):
+    active = [r for r in rules if r.get("enabled", True)]
+    print(f"┌{'─'*62}┐")
+    print(f"│{'req-red':^62}│")
+    print(f"├{'─'*62}┤")
+    print(f"│  port {port}  ·  {len(active)} rule(s)  ·  watching {len(allow_hosts)} host(s){'':>20}│")
+    print(f"│  all other traffic: blind tunnel (no MITM){'':>19}│")
+    print(f"└{'─'*62}┘")
+
+def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--no-system-proxy", action="store_true")
+    ap.add_argument("--install-cert",    action="store_true")
+    ap.add_argument("--unset-proxy",     action="store_true")
+    args = ap.parse_args()
+
+    if args.unset_proxy:    unset_system_proxy(); return
+    if args.install_cert:   install_ca_cert();    return
+
+    port        = find_free_port()
+    all_rules   = load_rules()
+    allow_hosts = extract_allow_hosts(all_rules)
+
+    if not allow_hosts:
+        print("WARNING: no target hosts — all traffic would be intercepted. Refusing.")
+        sys.exit(1)
+
+    use_sys = not args.no_system_proxy
+    if use_sys:
+        try:
+            set_system_proxy(port)
+        except Exception as e:
+            print(f"Warning: could not set system proxy: {e}")
+            use_sys = False
+
+    def _cleanup():
+        if use_sys: unset_system_proxy()
+    atexit.register(_cleanup)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: (_cleanup(), sys.exit(0)))
+
+    _banner(port, all_rules, allow_hosts)
+    asyncio.run(_run(port, allow_hosts))
+
+if __name__ == "__main__":
+    main()
