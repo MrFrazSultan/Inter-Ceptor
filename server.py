@@ -67,9 +67,9 @@ def _migrate(r:dict)->dict:
                             "value":r.get("target","")}},
             "action":{"type":"redirect","to":r.get("redirect","")}}
 
-DEFAULT_RULES=[{"id":"default-plan","name":"plan-endpoint","enabled":True,"priority":0,
-  "match":{"url":{"kind":"exact","value":"https://configs.kylenguyen.me/api/auth/plan"}},
-  "action":{"type":"redirect","to":"https://kylenguyen-me.cryptojinn.workers.dev/plan"}}]
+DEFAULT_RULES=[{"id":"example-rule","name":"example-redirect","enabled":False,"priority":0,
+  "match":{"url":{"kind":"exact","value":"https://api.example.com/endpoint"}},
+  "action":{"type":"redirect","to":"https://localhost:3000/endpoint"}}]
 
 def load_rules()->list:
     if RULES_FILE.exists():
