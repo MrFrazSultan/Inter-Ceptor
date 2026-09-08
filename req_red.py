@@ -152,14 +152,22 @@ def _rule_matches(rule: dict, flow: http.HTTPFlow) -> bool:
 
 # ─── host extraction for allow_hosts ──────────────────────────────────────────
 
+def _parse_host(value: str) -> str:
+    """Extract hostname from a URL-like string, adding a scheme if missing."""
+    if value and "://" not in value:
+        value = "https://" + value
+    return urllib.parse.urlparse(value).hostname or ""
+
 def extract_allow_hosts(rules: List[dict]) -> List[str]:
     hosts = set()
     for rule in rules:
+        if not rule.get("enabled", True):
+            continue
         url_m = rule.get("match", {}).get("url", {})
         kind  = url_m.get("kind", "exact")
         value = url_m.get("value", "")
         if kind in ("exact", "startswith", "contains", "endswith"):
-            h = urllib.parse.urlparse(value).hostname
+            h = _parse_host(value)
             if h:
                 hosts.add(re.escape(h))
         elif kind == "domain":
@@ -167,7 +175,7 @@ def extract_allow_hosts(rules: List[dict]) -> List[str]:
             if d:
                 hosts.add(r"(?:.*\.)?" + re.escape(d))
         elif kind == "wildcard":
-            h = urllib.parse.urlparse(value.replace("*", "")).hostname
+            h = _parse_host(value.replace("*", "x"))
             if h:
                 hosts.add(re.escape(h))
         elif kind == "regex":
