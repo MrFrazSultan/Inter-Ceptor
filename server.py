@@ -287,36 +287,69 @@ def _install_cert():
                 return True,"Certificate installed to System keychain."
         return False,"A Terminal window opened with the install command — enter your password there, then click Refresh on this page."
     if SYSTEM=="Windows":
-        # Elevate via PowerShell RunAs so Windows shows the UAC prompt
-        cert=str(CERT_PATH).replace("'","`'")
-        ps=(f"Start-Process certutil "
-            f"-ArgumentList '-addstore','-f','Root','{cert}' "
-            f"-Verb RunAs -Wait")
-        r=subprocess.run(["powershell","-NoProfile","-Command",ps],
-                         capture_output=True,text=True,timeout=60)
-        if r.returncode==0: return True,"Certificate installed to Windows Root store."
-        return False,(r.stderr.strip() or "UAC prompt cancelled or certutil failed.")
-    # Linux — try pkexec (GUI password prompt) then fall back to sudo
-    import shutil as _sh, shlex as _sx
-    for dest,update_cmd in [
-        (Path("/usr/local/share/ca-certificates/mitmproxy-ca.crt"), "update-ca-certificates"),
-        (Path("/etc/pki/ca-trust/source/anchors/mitmproxy-ca.crt"), "update-ca-trust extract"),
-    ]:
-        try:
-            shell_cmd=f"cp {_sx.quote(str(CERT_PATH))} {_sx.quote(str(dest))} && {update_cmd}"
-            # pkexec shows a native GUI auth dialog on GNOME/KDE
-            r=subprocess.run(["pkexec","sh","-c",shell_cmd],
-                             capture_output=True,text=True,timeout=30)
-            if r.returncode==0: return True,f"Certificate installed ({dest})"
-            # fall back to sudo (works in terminals)
-            r2=subprocess.run(["sudo","sh","-c",shell_cmd],
-                              capture_output=True,text=True,timeout=30)
-            if r2.returncode==0: return True,f"Certificate installed ({dest})"
-        except Exception:
-            continue
-    manual=(f"sudo cp {CERT_PATH} /usr/local/share/ca-certificates/mitmproxy.crt "
-            f"&& sudo update-ca-certificates")
-    return False,f"Auto-install failed. Run manually:\n{manual}"
+        # Write a .ps1 script and launch it elevated via UAC (Start-Process -Verb RunAs).
+        # Avoids fragile inline quoting — the cert path is safe inside the script file.
+        import tempfile, stat
+        cert_w=str(CERT_PATH).replace("/","\\")
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.ps1', delete=False) as f:
+            f.write(f'certutil -addstore -f Root "{cert_w}"\n')
+            f.write('Write-Host ""\nWrite-Host "Done — press Enter to close."\nRead-Host\n')
+            ps1=f.name
+        ps_cmd=(f'Start-Process powershell '
+                f'-ArgumentList \'-NoProfile -ExecutionPolicy Bypass -File "{ps1}"\' '
+                f'-Verb RunAs -Wait')
+        subprocess.Popen(["powershell","-NoProfile","-Command",ps_cmd])
+        for _ in range(60):
+            time.sleep(1)
+            if _check_cert_trusted():
+                try: os.unlink(ps1)
+                except: pass
+                return True,"Certificate installed to Windows Root store."
+        return False,"A UAC prompt should have appeared — accept it, then click Refresh on this page."
+    # Linux — open a terminal emulator with the sudo command (sudo needs a TTY;
+    # pkexec without a PolicyKit agent silently fails in most desktop setups).
+    import tempfile, stat, shutil as _sh
+    pkg=_OS_INFO.get("pkg_family","apt")
+    if pkg=="rpm":
+        dest="/etc/pki/ca-trust/source/anchors/mitmproxy-ca.crt"
+        update="update-ca-trust extract"
+    elif pkg=="pacman":
+        dest="/etc/ca-certificates/trust-source/anchors/mitmproxy-ca.crt"
+        update="trust extract-compat"
+    else:
+        dest="/usr/local/share/ca-certificates/mitmproxy-ca.crt"
+        update="update-ca-certificates"
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+        f.write('#!/bin/bash\n')
+        f.write(f'sudo cp {shlex.quote(str(CERT_PATH))} {shlex.quote(dest)}\n')
+        f.write(f'sudo {update}\n')
+        f.write('echo\necho "Done — press Enter to close."\nread\n')
+        sh_path=f.name
+    os.chmod(sh_path, stat.S_IRWXU)
+    # Try common terminal emulators in order
+    terms=[
+        ["x-terminal-emulator","-e","bash",sh_path],
+        ["gnome-terminal","--","bash",sh_path],
+        ["konsole","-e","bash",sh_path],
+        ["xfce4-terminal","-e",f"bash {sh_path}"],
+        ["xterm","-e","bash",sh_path],
+    ]
+    launched=False
+    for t in terms:
+        if _sh.which(t[0]):
+            subprocess.Popen(t)
+            launched=True
+            break
+    if not launched:
+        return False,(f"No terminal emulator found. Run manually:\n"
+                      f"sudo cp {CERT_PATH} {dest} && sudo {update}")
+    for _ in range(60):
+        time.sleep(1)
+        if _check_cert_trusted():
+            try: os.unlink(sh_path)
+            except: pass
+            return True,"Certificate installed."
+    return False,"Terminal opened — enter your password there, then click Refresh on this page."
 
 # ── SSE helper ────────────────────────────────────────────────────────────────
 def _sse_stream(buf_ref, subs_ref, lock_ref):
