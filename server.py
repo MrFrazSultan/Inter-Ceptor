@@ -105,21 +105,39 @@ def _check_cert_trusted():
     if SYSTEM=="Windows":
         r=_run_cmd(["certutil","-store","Root","mitmproxy"])
         return bool(r and r.returncode==0)
+    # Linux — check well-known trust store paths
+    for p in ["/usr/local/share/ca-certificates/mitmproxy-ca.crt",
+              "/etc/pki/ca-trust/source/anchors/mitmproxy-ca.crt",
+              "/etc/ssl/certs/mitmproxy-ca.pem"]:
+        if Path(p).exists(): return True
     return False
 
-# cache system proxy result for 5s to avoid hammering networksetup
+# cache system proxy result for 5s to avoid hammering system commands
 _sp_cache={"ts":0,"val":{"enabled":False,"services":[]}}
 def _check_system_proxy():
     global _sp_cache
     if time.time()-_sp_cache["ts"]<5: return _sp_cache["val"]
-    if SYSTEM!="Darwin":
-        _sp_cache={"ts":time.time(),"val":{"enabled":False,"services":[]}}
-        return _sp_cache["val"]
-    svcs=[]
-    for svc in _network_services():
-        r=_run_cmd(["networksetup","-getsecurewebproxy",svc],timeout=3)
-        if r and "Enabled: Yes" in r.stdout: svcs.append(svc)
-    val={"enabled":bool(svcs),"services":svcs}
+    if SYSTEM=="Darwin":
+        svcs=[]
+        for svc in _network_services():
+            r=_run_cmd(["networksetup","-getsecurewebproxy",svc],timeout=3)
+            if r and "Enabled: Yes" in r.stdout: svcs.append(svc)
+        val={"enabled":bool(svcs),"services":svcs}
+    elif SYSTEM=="Windows":
+        try:
+            import winreg
+            key=winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                               r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
+            enabled,_=winreg.QueryValueEx(key,"ProxyEnable")
+            winreg.CloseKey(key)
+            val={"enabled":bool(enabled),"services":["Windows"]}
+        except Exception:
+            val={"enabled":False,"services":[]}
+    else:
+        # Linux — check GNOME gsettings
+        r=_run_cmd(["gsettings","get","org.gnome.system.proxy","mode"],timeout=3)
+        is_on=bool(r and "manual" in r.stdout)
+        val={"enabled":is_on,"services":["GNOME"] if is_on else []}
     _sp_cache={"ts":time.time(),"val":val}
     return val
 
@@ -228,8 +246,22 @@ def _install_cert():
         r=subprocess.run(["certutil","-addstore","-f","Root",str(CERT_PATH)],
                          capture_output=True,text=True)
         if r.returncode==0: return True,"Certificate installed to Windows Root store."
-        return False,r.stderr.strip()
-    return False,f"Unsupported platform: {SYSTEM}"
+        return False,(r.stderr.strip() or "certutil failed — try running as Administrator.")
+    # Linux
+    import shutil as _sh
+    for dest,cmd in [
+        (Path("/usr/local/share/ca-certificates/mitmproxy-ca.crt"), ["sudo","update-ca-certificates"]),
+        (Path("/etc/pki/ca-trust/source/anchors/mitmproxy-ca.crt"), ["sudo","update-ca-trust","extract"]),
+    ]:
+        try:
+            dest.parent.mkdir(parents=True,exist_ok=True)
+            _sh.copy2(CERT_PATH,dest)
+            r=subprocess.run(cmd,capture_output=True,text=True,timeout=15)
+            if r.returncode==0: return True,f"Certificate installed ({dest})"
+        except Exception:
+            continue
+    manual=f"sudo cp {CERT_PATH} /usr/local/share/ca-certificates/mitmproxy.crt && sudo update-ca-certificates"
+    return False,f"Auto-install failed. Run manually:\n{manual}"
 
 # ── SSE helper ────────────────────────────────────────────────────────────────
 def _sse_stream(buf_ref, subs_ref, lock_ref):

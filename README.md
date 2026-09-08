@@ -1,9 +1,11 @@
-# Interceptor — System-Wide HTTPS Proxy for macOS
+# Interceptor — Cross-Platform HTTPS Proxy Interceptor
 
-**Interceptor** is a developer tool that lets you intercept, redirect, block, and mock HTTPS traffic on macOS — without touching your app's code. It runs a local mitmproxy instance, sets your system proxy automatically, and gives you a clean web UI to manage rules in real time.
+**Interceptor** is a developer tool that lets you intercept, redirect, block, and mock HTTPS traffic system-wide — without touching your app's code. It runs a local [mitmproxy](https://mitmproxy.org) instance, sets your system proxy automatically, and gives you a clean web UI to manage rules in real time.
+
+Works on **macOS**, **Windows**, and **Linux**.
 
 ![Status: Active](https://img.shields.io/badge/status-active-brightgreen)
-![Platform: macOS](https://img.shields.io/badge/platform-macOS-blue)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-blue)
 ![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
@@ -31,34 +33,19 @@ Most proxy tools intercept everything. That breaks services that pin certificate
 | Auto system proxy on/off | ✅ | ✅ | ❌ |
 | Mock with dynamic script | ✅ | ❌ | ❌ |
 | GraphQL matching | ✅ | ❌ | ❌ |
+| macOS + Windows + Linux | ✅ | ✅ | ✅ |
 | Free & open source | ✅ | ❌ | ✅ |
-
----
-
-## Screenshots
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                         req-red                              │
-├──────────────────────────────────────────────────────────────┤
-│  port 8081  ·  1 rule(s)  ·  watching 1 host(s)             │
-│  all other traffic: blind tunnel (no MITM)                   │
-└──────────────────────────────────────────────────────────────┘
-```
-
-The web UI (at `http://localhost:4750`) has four tabs:
-- **Setup** — dependency check, CA certificate install, system proxy status
-- **Rules** — create/edit/toggle/delete interception rules
-- **Requests** — live log of matched requests and their applied action
-- **Logs** — raw proxy output stream
 
 ---
 
 ## Requirements
 
-- macOS (system proxy management via `networksetup`)
-- Python 3.8 or later
-- Node.js (optional — only needed for dynamic mock scripts)
+| Requirement | macOS | Windows | Linux |
+|---|---|---|---|
+| Python 3.8+ | ✅ | ✅ | ✅ |
+| mitmproxy (auto-installed) | ✅ | ✅ | ✅ |
+| Node.js (optional — dynamic mocks only) | ✅ | ✅ | ✅ |
+| Admin/sudo for cert install | `osascript` prompts | Run as Administrator | `sudo` |
 
 ---
 
@@ -77,32 +64,79 @@ cd Inter-Ceptor
 python3 server.py
 ```
 
-This opens `http://localhost:4750` in your browser automatically.
+On Windows:
 
-### 3. Install the CA certificate
+```bash
+python server.py
+```
 
-On first run, mitmproxy generates a CA certificate. You need to trust it so your browser accepts intercepted HTTPS.
+This automatically opens `http://localhost:4750` in your browser.
 
-In the **Setup** tab, click **Install Certificate** and enter your password when macOS prompts. Or run:
+### 3. Install the CA Certificate
+
+The first time the proxy runs, mitmproxy generates a CA certificate. You need to trust it so your browser accepts intercepted HTTPS responses.
+
+In the **Setup** tab, click **Install Certificate**. Or run:
 
 ```bash
 python3 req_red.py --install-cert
 ```
 
-### 4. Add a rule
+#### Platform-specific certificate trust
+
+**macOS** — installs to System keychain via `osascript` (prompts for your password)
+
+**Windows** — run a terminal as Administrator, then:
+```cmd
+certutil -addstore -f Root %USERPROFILE%\.mitmproxy\mitmproxy-ca-cert.pem
+```
+Or use the Install Certificate button in the UI.
+
+**Linux (Debian/Ubuntu)**:
+```bash
+sudo cp ~/.mitmproxy/mitmproxy-ca-cert.pem /usr/local/share/ca-certificates/mitmproxy.crt
+sudo update-ca-certificates
+```
+
+**Linux (Fedora/RHEL/Arch)**:
+```bash
+sudo cp ~/.mitmproxy/mitmproxy-ca-cert.pem /etc/pki/ca-trust/source/anchors/mitmproxy.crt
+sudo update-ca-trust extract
+```
+
+**Firefox** — Firefox uses its own certificate store. Go to `about:preferences#privacy` → **Certificates** → **View Certificates** → **Authorities** → **Import** → select `~/.mitmproxy/mitmproxy-ca-cert.pem`.
+
+**Chrome / Edge / Safari** — trust the system certificate store automatically once you install it above.
+
+---
+
+### 4. Add a Rule
 
 Go to the **Rules** tab → **New Rule**. Set:
 - **Pattern**: the URL or domain to intercept (e.g. `https://api.example.com/v1/data`)
 - **Match type**: exact, contains, startswith, endswith, wildcard, regex, or domain
 - **Action**: redirect → enter target URL, block, or mock → enter response body
 
-### 5. Start the proxy
+### 5. Start the Proxy
 
 Click **Start** in the UI. The proxy starts on a free port, sets your system proxy automatically, and begins intercepting traffic matching your rules. Everything else tunnels through untouched.
 
 ### 6. Stop
 
-Click **Stop** or press `Ctrl+C`. The system proxy is restored automatically.
+Click **Stop** or press `Ctrl+C`. The system proxy is restored automatically on all platforms.
+
+---
+
+## System Proxy Management
+
+Interceptor sets and clears the system proxy automatically.
+
+| Platform | Method |
+|---|---|
+| macOS | `networksetup` — sets HTTP + HTTPS proxy on all active network services |
+| Windows | Windows registry (`HKCU\...\Internet Settings`) + `ie4uinit.exe` refresh |
+| Linux (GNOME) | `gsettings` — sets `org.gnome.system.proxy` to manual mode |
+| Linux (KDE/other) | Set `HTTP_PROXY` / `HTTPS_PROXY` environment variables manually |
 
 ---
 
@@ -230,10 +264,10 @@ Only the hosts referenced in your active rules are added to mitmproxy's `allow_h
 ## Running Standalone (No Web UI)
 
 ```bash
-python3 req_red.py                  # start with system proxy
+python3 req_red.py                    # start with system proxy
 python3 req_red.py --no-system-proxy  # start without touching proxy settings
-python3 req_red.py --install-cert   # install CA cert and exit
-python3 req_red.py --unset-proxy    # disable system proxy and exit
+python3 req_red.py --install-cert     # install CA cert and exit
+python3 req_red.py --unset-proxy      # disable system proxy and exit
 ```
 
 ---
@@ -254,6 +288,16 @@ Use the **Rules** tab → **Export** to download `rules.json`. Import via the **
 
 **Some apps still fail when proxy is running**
 → Those apps use certificate pinning. Interceptor deliberately does not MITM any host not in your rules, but if a pinned app explicitly refuses the proxy connection, add its domain to a block rule so it fails fast, or use `--no-system-proxy` and configure only the target app manually.
+
+**Windows: proxy isn't applied after starting**
+→ Some Windows apps require a process restart to pick up proxy registry changes. Internet Explorer / Edge apply the change immediately. Chrome may need to be restarted.
+
+**Linux: system proxy not set (non-GNOME desktop)**
+→ KDE, XFCE, and others don't use gsettings. Set the proxy manually in your desktop's network settings, or export environment variables:
+```bash
+export HTTP_PROXY=http://127.0.0.1:8080
+export HTTPS_PROXY=http://127.0.0.1:8080
+```
 
 **`mitmproxy` install fails**
 → Try: `pip3 install mitmproxy` or `pip3 install --break-system-packages mitmproxy`

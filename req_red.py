@@ -297,6 +297,7 @@ class ReqRedAddon:
 # ─── system proxy ─────────────────────────────────────────────────────────────
 
 def _network_services() -> List[str]:
+    """macOS only — list active network services."""
     if sys.platform != "darwin":
         return []
     out = subprocess.run(["networksetup", "-listallnetworkservices"],
@@ -305,20 +306,62 @@ def _network_services() -> List[str]:
             if l.strip() and not l.startswith("*")]
 
 def set_system_proxy(port: int):
-    svcs = _network_services()
-    if not svcs:
-        return
-    print(f"Setting system proxy (port {port}) on: {', '.join(svcs)}")
-    for svc in svcs:
-        subprocess.run(["networksetup", "-setwebproxy",            svc, "127.0.0.1", str(port)], check=True)
-        subprocess.run(["networksetup", "-setsecurewebproxy",      svc, "127.0.0.1", str(port)], check=True)
-        subprocess.run(["networksetup", "-setwebproxystate",       svc, "on"],                   check=True)
-        subprocess.run(["networksetup", "-setsecurewebproxystate", svc, "on"],                   check=True)
+    if sys.platform == "darwin":
+        svcs = _network_services()
+        if not svcs:
+            return
+        print(f"Setting system proxy (port {port}) on: {', '.join(svcs)}")
+        for svc in svcs:
+            subprocess.run(["networksetup", "-setwebproxy",            svc, "127.0.0.1", str(port)], check=True)
+            subprocess.run(["networksetup", "-setsecurewebproxy",      svc, "127.0.0.1", str(port)], check=True)
+            subprocess.run(["networksetup", "-setwebproxystate",       svc, "on"],                   check=True)
+            subprocess.run(["networksetup", "-setsecurewebproxystate", svc, "on"],                   check=True)
+    elif sys.platform == "win32":
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                             r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+                             0, winreg.KEY_WRITE)
+        winreg.SetValueEx(key, "ProxyEnable",   0, winreg.REG_DWORD, 1)
+        winreg.SetValueEx(key, "ProxyServer",   0, winreg.REG_SZ,    f"127.0.0.1:{port}")
+        winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ,    "<local>")
+        winreg.CloseKey(key)
+        subprocess.run(["ie4uinit.exe", "-show"], capture_output=True)
+        print(f"System proxy set to 127.0.0.1:{port} (Windows registry)")
+    else:
+        # Linux — try GNOME gsettings
+        try:
+            subprocess.run(["gsettings", "set", "org.gnome.system.proxy", "mode",        "manual"],      check=True)
+            subprocess.run(["gsettings", "set", "org.gnome.system.proxy.http",  "host",  "127.0.0.1"],   check=True)
+            subprocess.run(["gsettings", "set", "org.gnome.system.proxy.http",  "port",  str(port)],     check=True)
+            subprocess.run(["gsettings", "set", "org.gnome.system.proxy.https", "host",  "127.0.0.1"],   check=True)
+            subprocess.run(["gsettings", "set", "org.gnome.system.proxy.https", "port",  str(port)],     check=True)
+            print(f"System proxy set via gsettings (GNOME) on port {port}")
+        except Exception as e:
+            print(f"Warning: could not set system proxy via gsettings: {e}")
+            print(f"Set HTTP_PROXY=http://127.0.0.1:{port} and HTTPS_PROXY=http://127.0.0.1:{port} manually.")
 
 def unset_system_proxy():
-    for svc in _network_services():
-        subprocess.run(["networksetup", "-setwebproxystate",       svc, "off"])
-        subprocess.run(["networksetup", "-setsecurewebproxystate", svc, "off"])
+    if sys.platform == "darwin":
+        for svc in _network_services():
+            subprocess.run(["networksetup", "-setwebproxystate",       svc, "off"])
+            subprocess.run(["networksetup", "-setsecurewebproxystate", svc, "off"])
+    elif sys.platform == "win32":
+        import winreg
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                 r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+                                 0, winreg.KEY_WRITE)
+            winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
+            winreg.CloseKey(key)
+            subprocess.run(["ie4uinit.exe", "-show"], capture_output=True)
+        except Exception as e:
+            print(f"Could not unset Windows proxy: {e}")
+    else:
+        try:
+            subprocess.run(["gsettings", "set", "org.gnome.system.proxy", "mode", "none"],
+                           capture_output=True)
+        except Exception:
+            pass
     print("System proxy disabled.")
 
 # ─── port ────────────────────────────────────────────────────────────────────
@@ -348,6 +391,28 @@ def install_ca_cert():
                             f'do shell script "{cmd}" with administrator privileges'],
                            capture_output=True, text=True)
         return r.returncode == 0
+    if sys.platform == "win32":
+        r = subprocess.run(["certutil", "-addstore", "-f", "Root", str(CERT_PATH)],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"certutil failed: {r.stderr.strip()}")
+        return r.returncode == 0
+    # Linux — try Debian/Ubuntu then Fedora/RHEL
+    import shutil as _sh
+    for dest, update_cmd in [
+        (Path("/usr/local/share/ca-certificates/mitmproxy-ca.crt"), ["sudo", "update-ca-certificates"]),
+        (Path("/etc/pki/ca-trust/source/anchors/mitmproxy-ca.crt"), ["sudo", "update-ca-trust", "extract"]),
+    ]:
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            _sh.copy2(CERT_PATH, dest)
+            r = subprocess.run(update_cmd, capture_output=True, text=True, timeout=15)
+            if r.returncode == 0:
+                print(f"CA cert installed to {dest}")
+                return True
+        except Exception as e:
+            print(f"Cert install attempt failed ({dest}): {e}")
+    print(f"Manual install: sudo cp {CERT_PATH} /usr/local/share/ca-certificates/mitmproxy.crt && sudo update-ca-certificates")
     return False
 
 # ─── runner ───────────────────────────────────────────────────────────────────
