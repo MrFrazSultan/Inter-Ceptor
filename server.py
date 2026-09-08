@@ -84,10 +84,10 @@ def save_rules(rules:list):
 def _check_deps():
     try:
         from importlib.metadata import version as v
-        try: ver=v("mitmproxy")
-        except: ver="installed"
+        ver=v("mitmproxy")
         return {"ok":True,"version":ver}
-    except ImportError: return {"ok":False,"version":None}
+    except Exception:
+        return {"ok":False,"version":None}
 
 def _run_cmd(args, timeout=4):
     try:
