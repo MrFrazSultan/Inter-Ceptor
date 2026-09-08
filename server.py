@@ -97,11 +97,10 @@ def _run_cmd(args, timeout=4):
 
 def _check_cert_trusted():
     if SYSTEM=="Darwin":
-        for kc in ["/Library/Keychains/System.keychain",
-                   os.path.expanduser("~/Library/Keychains/login.keychain-db")]:
-            r=_run_cmd(["security","find-certificate","-c","mitmproxy",kc])
-            if r and r.returncode==0: return True
-        return False
+        if not CERT_PATH.exists(): return False
+        # verify-cert tests actual SSL trust, not just presence in keychain
+        r=_run_cmd(["security","verify-cert","-c",str(CERT_PATH),"-p","ssl"])
+        return bool(r and r.returncode==0)
     if SYSTEM=="Windows":
         r=_run_cmd(["certutil","-store","Root","mitmproxy"])
         return bool(r and r.returncode==0)
