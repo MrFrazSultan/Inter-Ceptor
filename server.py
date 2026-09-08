@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """req-red web server.  Run: python server.py  →  http://localhost:4750"""
 
-import collections, json, os, platform, queue, re, socket, subprocess
+import collections, json, os, platform, queue, re, shlex, socket, subprocess
 import sys, threading, time, uuid
 from pathlib import Path
 
@@ -265,22 +265,27 @@ def _install_cert():
     if not CERT_PATH.exists():
         return False,"CA cert not found — generate it first."
     if SYSTEM=="Darwin":
-        # Use AppleScript variable + quoted form of to avoid any quoting issues in the shell cmd
-        script=(
-            f'set certPath to "{str(CERT_PATH)}"\n'
-            'do shell script "security add-trusted-cert -d -r trustRoot '
-            '-k /Library/Keychains/System.keychain " & quoted form of certPath '
-            'with administrator privileges'
+        # Open a real Terminal window to run the sudo command — osascript's
+        # "do shell script with administrator privileges" lacks the GUI authorization
+        # context that SecTrustSettingsSetTrustSettings requires on macOS 13+.
+        cmd=(f'sudo security add-trusted-cert -d -r trustRoot '
+             f'-k /Library/Keychains/System.keychain {shlex.quote(str(CERT_PATH))}; '
+             f'echo; echo ">>> Press any key to close this window..."; read -n1')
+        applescript=(
+            f'tell application "Terminal"\n'
+            f'  activate\n'
+            f'  do script {shlex.quote(cmd)}\n'
+            f'end tell'
         )
-        r=subprocess.run(["osascript","-e",script],capture_output=True,text=True)
-        # macOS sometimes returns non-zero (SecTrustSettingsSetTrustSettings error) even
-        # when the cert is actually installed and trusted — verify the real outcome.
+        subprocess.run(["osascript","-e",applescript])
+        # Wait up to 30s for the user to complete the sudo prompt in Terminal
+        for _ in range(30):
+            time.sleep(1)
+            if _check_cert_trusted():
+                return True,"Certificate installed to System keychain."
         if _check_cert_trusted():
             return True,"Certificate installed to System keychain."
-        err=r.stderr.strip()
-        if "cancelled" in err.lower() or "-128" in err:
-            return False,"Authentication cancelled — please try again and enter your password."
-        return False,(err or "osascript failed — check System Preferences > Security.")
+        return False,"Terminal opened — enter your password there. Refresh this page after closing it."
     if SYSTEM=="Windows":
         # Elevate via PowerShell RunAs so Windows shows the UAC prompt
         cert=str(CERT_PATH).replace("'","`'")
