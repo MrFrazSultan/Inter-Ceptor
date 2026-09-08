@@ -265,27 +265,27 @@ def _install_cert():
     if not CERT_PATH.exists():
         return False,"CA cert not found — generate it first."
     if SYSTEM=="Darwin":
-        # Open a real Terminal window to run the sudo command — osascript's
-        # "do shell script with administrator privileges" lacks the GUI authorization
-        # context that SecTrustSettingsSetTrustSettings requires on macOS 13+.
-        cmd=(f'sudo security add-trusted-cert -d -r trustRoot '
-             f'-k /Library/Keychains/System.keychain {shlex.quote(str(CERT_PATH))}; '
-             f'echo; echo ">>> Press any key to close this window..."; read -n1')
-        applescript=(
-            f'tell application "Terminal"\n'
-            f'  activate\n'
-            f'  do script {shlex.quote(cmd)}\n'
-            f'end tell'
-        )
-        subprocess.run(["osascript","-e",applescript])
-        # Wait up to 30s for the user to complete the sudo prompt in Terminal
-        for _ in range(30):
+        # Write a .command file — open(1) always launches .command in Terminal.app
+        # with a full GUI session, giving SecTrustSettingsSetTrustSettings the
+        # authorization context it needs (osascript do shell script lacks this on macOS 13+).
+        import tempfile, stat
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.command', delete=False) as f:
+            f.write('#!/bin/bash\n')
+            f.write(f'sudo security add-trusted-cert -d -r trustRoot '
+                    f'-k /Library/Keychains/System.keychain '
+                    f'{shlex.quote(str(CERT_PATH))}\n')
+            f.write('echo\necho "Done — you can close this window."\n')
+            script_path = f.name
+        os.chmod(script_path, stat.S_IRWXU)
+        subprocess.Popen(["open", script_path])
+        # Poll up to 45s for the user to enter their password in Terminal
+        for _ in range(45):
             time.sleep(1)
             if _check_cert_trusted():
+                try: os.unlink(script_path)
+                except: pass
                 return True,"Certificate installed to System keychain."
-        if _check_cert_trusted():
-            return True,"Certificate installed to System keychain."
-        return False,"Terminal opened — enter your password there. Refresh this page after closing it."
+        return False,"A Terminal window opened with the install command — enter your password there, then click Refresh on this page."
     if SYSTEM=="Windows":
         # Elevate via PowerShell RunAs so Windows shows the UAC prompt
         cert=str(CERT_PATH).replace("'","`'")
