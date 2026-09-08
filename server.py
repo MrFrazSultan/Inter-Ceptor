@@ -242,7 +242,10 @@ def _install_cert():
             'with administrator privileges'
         )
         r=subprocess.run(["osascript","-e",script],capture_output=True,text=True)
-        if r.returncode==0: return True,"Certificate installed to System keychain."
+        # macOS sometimes returns non-zero (SecTrustSettingsSetTrustSettings error) even
+        # when the cert is actually installed and trusted — verify the real outcome.
+        if _check_cert_trusted():
+            return True,"Certificate installed to System keychain."
         err=r.stderr.strip()
         if "cancelled" in err.lower() or "-128" in err:
             return False,"Authentication cancelled — please try again and enter your password."
