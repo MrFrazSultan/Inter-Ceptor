@@ -148,6 +148,38 @@ def _network_services():
     return [l.strip() for l in r.stdout.splitlines()[1:]
             if l.strip() and not l.startswith("*")]
 
+def _detect_os():
+    if SYSTEM=="Darwin":
+        ver=platform.mac_ver()[0]
+        return {"system":"Darwin","display":f"macOS {ver}","distro":None,"pkg_family":"brew"}
+    if SYSTEM=="Windows":
+        ver=platform.version().split(".")[0]
+        return {"system":"Windows","display":f"Windows {ver}","distro":None,"pkg_family":"winget"}
+    # Linux — read /etc/os-release for distro details
+    distro_name="Linux"; distro_id="linux"; pkg_family="apt"
+    try:
+        info={}
+        with open("/etc/os-release") as f:
+            for line in f:
+                line=line.strip()
+                if "=" in line:
+                    k,v=line.split("=",1); info[k]=v.strip('"')
+        distro_name=info.get("PRETTY_NAME",info.get("NAME","Linux"))
+        distro_id=info.get("ID","linux").lower()
+        id_like=info.get("ID_LIKE","").lower()
+        if distro_id in ("fedora","rhel","centos","rocky","almalinux") or \
+           any(x in id_like for x in ("fedora","rhel")):
+            pkg_family="rpm"
+        elif distro_id in ("arch","manjaro","endeavouros") or "arch" in id_like:
+            pkg_family="pacman"
+        else:
+            pkg_family="apt"
+    except Exception:
+        pass
+    return {"system":"Linux","display":distro_name,"distro":distro_id,"pkg_family":pkg_family}
+
+_OS_INFO=_detect_os()
+
 def _find_free_port(start=PROXY_HINT):
     for p in range(start,start+20):
         with socket.socket() as s:
@@ -308,7 +340,8 @@ def api_status():
     return jsonify({"proxy_running":_proxy_running(),"proxy_port":_proxy_port,
                     "deps":deps,"cert_exists":CERT_PATH.exists(),
                     "cert_trusted":_check_cert_trusted(),
-                    "system_proxy":_check_system_proxy(),"platform":SYSTEM})
+                    "system_proxy":_check_system_proxy(),"platform":SYSTEM,
+                    "os_info":_OS_INFO})
 
 @app.route("/api/deps/install",methods=["POST"])
 def api_deps():
@@ -517,21 +550,35 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:14px
   text-transform:uppercase;letter-spacing:.6px;color:var(--fg2)}
 .card-bd{padding:16px}
 
+/* ── OS banner ── */
+.os-banner{display:flex;align-items:center;gap:10px;padding:10px 14px;
+  background:var(--sf);border:1px solid var(--bd);border-radius:var(--r2);
+  margin-bottom:14px}
+.os-icon{font-size:22px;line-height:1}
+.os-label-sub{font-size:10px;color:var(--fg3);text-transform:uppercase;letter-spacing:.06em}
+.os-label{font-size:13px;font-weight:600}
 /* ── setup checklist ── */
 .chk{display:flex;flex-direction:column;gap:10px}
 .chk-item{background:var(--sf);border:1px solid var(--bd);border-radius:var(--r2);
   padding:14px 16px;display:grid;grid-template-columns:22px 1fr auto;
-  gap:12px;align-items:center;border-left-width:3px}
+  gap:12px;align-items:start;border-left-width:3px}
 .chk-item.ok  {border-left-color:var(--gr)}
 .chk-item.warn{border-left-color:var(--am)}
 .chk-item.fail{border-left-color:var(--re)}
-.chk-icon{font-size:15px;text-align:center;font-family:var(--mono)}
+.chk-icon{font-size:15px;text-align:center;font-family:var(--mono);padding-top:1px}
 .chk-title{font-size:13px;font-weight:600}
 .chk-desc{font-size:11.5px;color:var(--fg2);margin-top:2px;font-family:var(--mono);word-break:break-all}
-.chk-act{flex-shrink:0}
+.chk-act{flex-shrink:0;display:flex;flex-direction:column;align-items:flex-end;gap:6px}
+.manual-det{margin-top:6px;font-size:11px}
+.manual-det summary{cursor:pointer;color:var(--fg3);user-select:none;list-style:none;display:flex;align-items:center;gap:4px}
+.manual-det summary::before{content:'▶';font-size:8px;transition:transform .15s}
+.manual-det[open] summary::before{transform:rotate(90deg)}
+.manual-pre{margin:6px 0 0;padding:8px 10px;background:var(--bg);border:1px solid var(--bd);
+  border-radius:6px;font-family:var(--mono);font-size:11px;white-space:pre;overflow-x:auto;
+  color:var(--fg2);line-height:1.6}
 @media(max-width:480px){
   .chk-item{grid-template-columns:22px 1fr;gap:10px}
-  .chk-act{grid-column:2;margin-top:4px}
+  .chk-act{grid-column:2;margin-top:4px;align-items:flex-start}
 }
 
 /* ── badge ── */
@@ -748,6 +795,13 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:14px
 <!-- SETUP -->
 <div class="panel active" id="p-setup">
 <div class="page">
+  <div class="os-banner">
+    <span class="os-icon" id="osIcon">💻</span>
+    <div>
+      <div class="os-label-sub">Detected OS</div>
+      <div class="os-label" id="osLabel">Detecting…</div>
+    </div>
+  </div>
   <div class="chk" id="chkList">
     <div class="chk-item" id="ci-deps"><span class="chk-icon">⋯</span>
       <div><div class="chk-title">Python dependencies</div>
@@ -1080,31 +1134,73 @@ function renderStatus(){
   document.getElementById('portLabel').textContent=on?':'+ST.proxy_port:'';
   document.getElementById('startBtn').style.display=on?'none':'';
   document.getElementById('stopBtn').style.display=on?'':'none';
+
+  // OS banner
+  const os=ST.os_info||{};
+  const sys=os.system||'Unknown';
+  const fam=os.pkg_family||'apt';
+  const icons={Darwin:'🍎',Windows:'🪟',Linux:'🐧'};
+  document.getElementById('osIcon').textContent=icons[sys]||'💻';
+  document.getElementById('osLabel').textContent=os.display||sys;
+
+  // manual fallback commands
+  const port=ST.proxy_port||8080;
+  const py=sys==='Windows'?'python':'python3';
+  const pip=sys==='Windows'?'pip':'pip3';
+  const certPath=sys==='Windows'?'%USERPROFILE%\\.mitmproxy\\mitmproxy-ca-cert.pem':'~/.mitmproxy/mitmproxy-ca-cert.pem';
+
+  const manDeps=`${pip} install mitmproxy`;
+
+  const manCert=`${py} req_red.py --no-system-proxy\n# Wait a few seconds for the cert to generate, then press Ctrl+C`;
+
+  let manTrust;
+  if(sys==='Darwin'){
+    manTrust=`sudo security add-trusted-cert -d -r trustRoot \\\n  -k /Library/Keychains/System.keychain \\\n  ${certPath}`;
+  } else if(sys==='Windows'){
+    manTrust=`# Run Command Prompt or PowerShell as Administrator:\ncertutil -addstore -f Root "${certPath}"`;
+  } else if(fam==='rpm'){
+    manTrust=`sudo cp ${certPath} /etc/pki/ca-trust/source/anchors/mitmproxy.crt\nsudo update-ca-trust extract`;
+  } else if(fam==='pacman'){
+    manTrust=`sudo cp ${certPath} /etc/ca-certificates/trust-source/anchors/mitmproxy.crt\nsudo trust extract-compat`;
+  } else {
+    manTrust=`sudo cp ${certPath} /usr/local/share/ca-certificates/mitmproxy.crt\nsudo update-ca-certificates`;
+  }
+
+  let manProxy;
+  if(sys==='Darwin'){
+    manProxy=`# Replace "Wi-Fi" with your active network service name\nnetworksetup -setwebproxy "Wi-Fi" 127.0.0.1 ${port}\nnetworksetup -setsecurewebproxy "Wi-Fi" 127.0.0.1 ${port}\nnetworksetup -setwebproxystate "Wi-Fi" on\nnetworksetup -setsecurewebproxystate "Wi-Fi" on`;
+  } else if(sys==='Windows'){
+    manProxy=`# Run in PowerShell:\n$reg = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'\nSet-ItemProperty $reg ProxyEnable 1\nSet-ItemProperty $reg ProxyServer '127.0.0.1:${port}'`;
+  } else {
+    manProxy=`# GNOME:\ngsettings set org.gnome.system.proxy mode manual\ngsettings set org.gnome.system.proxy.http host 127.0.0.1\ngsettings set org.gnome.system.proxy.http port ${port}\ngsettings set org.gnome.system.proxy.https host 127.0.0.1\ngsettings set org.gnome.system.proxy.https port ${port}\n# KDE / other: set proxy in System Settings → Network → Proxy`;
+  }
+
   // checklist
   const d=ST.deps||{};
   setChk('deps',d.ok,d.ok?'mitmproxy '+d.version:'Not installed',
-    d.ok?null:{label:'Install',fn:'installDeps()'});
+    d.ok?null:{label:'Install',fn:'installDeps()'},manDeps);
   const ce=ST.cert_exists;
   setChk('cert',ce,ce?String(CERT_PATH||'~/.mitmproxy/mitmproxy-ca-cert.pem'):'Not generated',
-    ce?null:{label:'Generate',fn:'genCert()'});
+    ce?null:{label:'Generate',fn:'genCert()'},manCert);
   const ct=ST.cert_trusted;
   setChk('trust',ct,ct?'Trusted in system keychain':'Not trusted — install via system dialog',
-    ct?null:{label:'Install certificate',fn:'installCert()',primary:true});
+    ct?null:{label:'Install certificate',fn:'installCert()',primary:true},manTrust);
   const sp=ST.system_proxy||{};
   const spOk=on&&sp.enabled;
   setChk('proxy',on?spOk:null,
     on?(sp.enabled?'Active on: '+(sp.services||[]).join(', '):'Running but system proxy not set'):'Start the proxy to activate',
-    null);
+    null,manProxy);
 }
-function setChk(id,ok,desc,act){
+function setChk(id,ok,desc,act,manual){
   const el=document.getElementById('ci-'+id);
   el.className='chk-item '+(ok===true?'ok':ok===false?'fail':'warn');
   el.querySelector('.chk-icon').textContent=ok===true?'✓':ok===false?'✗':'○';
   document.getElementById('ci-'+id+'-d').textContent=desc;
   const a=document.getElementById('ci-'+id+'-a');
-  a.innerHTML=act?`<button class="btn btn-sm ${act.primary?'btn-ac':'btn-ghost'}"
-    onclick="${act.fn}">${act.label}</button>`:
-    (ok===true?'<span class="badge bg-gr">OK</span>':'');
+  const btn=act?`<button class="btn btn-sm ${act.primary?'btn-ac':'btn-ghost'}"
+    onclick="${act.fn}">${act.label}</button>`:(ok===true?'<span class="badge bg-gr">OK</span>':'');
+  const man=manual?`<details class="manual-det"><summary>Manual command</summary><pre class="manual-pre">${esc(manual)}</pre></details>`:'';
+  a.innerHTML=btn+man;
 }
 const CERT_PATH='~/.mitmproxy/mitmproxy-ca-cert.pem';
 
