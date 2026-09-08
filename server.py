@@ -341,7 +341,7 @@ def api_status():
                     "deps":deps,"cert_exists":CERT_PATH.exists(),
                     "cert_trusted":_check_cert_trusted(),
                     "system_proxy":_check_system_proxy(),"platform":SYSTEM,
-                    "os_info":_OS_INFO})
+                    "os_info":_OS_INFO,"script_dir":str(SCRIPT_DIR)})
 
 @app.route("/api/deps/install",methods=["POST"])
 def api_deps():
@@ -579,6 +579,14 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:14px
 .copy-btn{margin-left:auto;font-size:10px;padding:2px 8px;border:1px solid var(--bd);
   border-radius:4px;background:var(--sf2);color:var(--fg2);cursor:pointer;flex-shrink:0}
 .copy-btn:hover{background:var(--bd);color:var(--fg)}
+/* ── server commands ── */
+.srv-cmds{margin-top:18px;background:var(--sf);border:1px solid var(--bd);border-radius:var(--r2);padding:14px 16px}
+.srv-cmds-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--fg3);margin-bottom:12px}
+.srv-cmd-row{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
+.srv-cmd-row:last-child{margin-bottom:0}
+.srv-cmd-label{font-size:11.5px;color:var(--fg2);font-weight:600}
+.srv-cmd-wrap{display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:8px 10px}
+.srv-cmd-pre{flex:1;font-family:var(--mono);font-size:11px;color:var(--fg2);white-space:pre;overflow-x:auto;margin:0}
 @media(max-width:480px){
   .chk-item{grid-template-columns:22px 1fr;gap:10px}
   .chk-act{grid-column:2;margin-top:4px;align-items:flex-start}
@@ -822,6 +830,25 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:14px
       <div><div class="chk-title">System proxy</div>
            <div class="chk-desc" id="ci-proxy-d">checking…</div></div>
       <div class="chk-act" id="ci-proxy-a"></div></div>
+  </div>
+
+  <!-- Server Commands -->
+  <div class="srv-cmds" id="srvCmds">
+    <div class="srv-cmds-title">Server commands</div>
+    <div class="srv-cmd-row">
+      <span class="srv-cmd-label">Kill server</span>
+      <div class="srv-cmd-wrap">
+        <pre class="srv-cmd-pre" id="cmdKill"></pre>
+        <button class="copy-btn" onclick="copySrvCmd('cmdKill',this)">Copy</button>
+      </div>
+    </div>
+    <div class="srv-cmd-row">
+      <span class="srv-cmd-label">Restart server</span>
+      <div class="srv-cmd-wrap">
+        <pre class="srv-cmd-pre" id="cmdRestart"></pre>
+        <button class="copy-btn" onclick="copySrvCmd('cmdRestart',this)">Copy</button>
+      </div>
+    </div>
   </div>
 </div>
 </div>
@@ -1146,6 +1173,19 @@ function renderStatus(){
   document.getElementById('osIcon').textContent=icons[sys]||'💻';
   document.getElementById('osLabel').textContent=os.display||sys;
 
+  // server kill / restart commands
+  const scriptDir=window.location.pathname.replace(/\/[^/]*$/,'') || '.';
+  let cmdKill, cmdRestart;
+  if(sys==='Windows'){
+    cmdKill=`taskkill /F /IM python.exe /FI "WINDOWTITLE eq server.py"`;
+    cmdRestart=`taskkill /F /IM python.exe /FI "WINDOWTITLE eq server.py" & python server.py`;
+  } else {
+    cmdKill=`pkill -f "python3 server.py"`;
+    cmdRestart=`pkill -f "python3 server.py"; sleep 1; cd "${ST.script_dir||'~/Downloads/req red'}" && python3 server.py &`;
+  }
+  document.getElementById('cmdKill').textContent=cmdKill;
+  document.getElementById('cmdRestart').textContent=cmdRestart;
+
   // manual fallback commands
   const port=ST.proxy_port||8080;
   const py=sys==='Windows'?'python':'python3';
@@ -1211,6 +1251,13 @@ function setChk(id,ok,desc,act,manual){
 }
 async function copyCmd(btn){
   const pre=btn.closest('.manual-det').querySelector('.manual-pre');
+  try{
+    await navigator.clipboard.writeText(pre.textContent);
+    btn.textContent='✓ Copied';setTimeout(()=>btn.textContent='Copy',1800);
+  }catch{btn.textContent='Copy';}
+}
+async function copySrvCmd(id,btn){
+  const pre=document.getElementById(id);
   try{
     await navigator.clipboard.writeText(pre.textContent);
     btn.textContent='✓ Copied';setTimeout(()=>btn.textContent='Copy',1800);
