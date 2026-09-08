@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Quick launcher — sets system proxy, starts req-red, restores on exit.
+# Start the Interceptor web UI.
 # Run with: bash run.sh
 cd "$(dirname "$0")"
-python3 req_red.py "$@"
+python3 server.py "$@"

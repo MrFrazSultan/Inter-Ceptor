@@ -535,11 +535,11 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:14px
 
 /* desktop table */
 .rtable{background:var(--sf);border:1px solid var(--bd);border-radius:var(--r2);overflow:hidden}
-.rtable-head{display:grid;grid-template-columns:36px 1fr 80px 1fr 1fr 110px;
+.rtable-head{display:grid;grid-template-columns:36px 1fr 80px 1fr 1fr 54px 90px;
   background:var(--sf2);border-bottom:1px solid var(--bd)}
 .rth{font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.5px;
   text-transform:uppercase;color:var(--fg2);padding:9px 12px}
-.rrow{display:grid;grid-template-columns:36px 1fr 80px 1fr 1fr 110px;
+.rrow{display:grid;grid-template-columns:36px 1fr 80px 1fr 1fr 54px 90px;
   border-bottom:1px solid var(--bd);align-items:center;transition:background .1s}
 .rrow:last-child{border-bottom:none}
 .rrow:hover{background:var(--sf2)}
@@ -769,7 +769,8 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:14px
       <div class="rth">Action</div>
       <div class="rth">Match</div>
       <div class="rth">Target / Redirect</div>
-      <div class="rth" style="text-align:right;padding-right:16px">Controls</div>
+      <div class="rth" style="text-align:center">On</div>
+      <div class="rth" style="text-align:right;padding-right:16px">Actions</div>
     </div>
     <div id="rtableBody"></div>
   </div>
@@ -1135,9 +1136,11 @@ function renderRules(){
         <span style="color:var(--am)">${esc(trunc(r.match?.url?.value||'',36))}</span>
         ${r.action?.to?`<br><span style="color:var(--gr)">→ ${esc(trunc(r.action.to,36))}</span>`:''}
       </div>
-      <div class="rc rc-acts">
+      <div class="rc" style="display:flex;align-items:center;justify-content:center">
         <label class="tgl"><input type="checkbox" ${r.enabled?'checked':''} onchange="toggleRule('${r.id}')">
           <span class="tgl-tk"></span><span class="tgl-th"></span></label>
+      </div>
+      <div class="rc rc-acts">
         <button class="btn-icon" onclick="moveRule('${r.id}',-1)" title="Higher priority">↑</button>
         <button class="btn-icon" onclick="moveRule('${r.id}',1)"  title="Lower priority">↓</button>
         <button class="btn-icon" onclick="editRule('${r.id}')"    title="Edit">✎</button>
