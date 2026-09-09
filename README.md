@@ -310,6 +310,37 @@ Use the **Rules** tab → **Export** to download `rules.json`. Import via the **
 **Windows: proxy isn't applied after starting**
 → Some Windows apps require a process restart to pick up proxy registry changes. Internet Explorer / Edge apply the change immediately. Chrome may need to be restarted.
 
+**Windows / Linux: 502 Bad Gateway (WinError 1225 / Connection refused)**
+→ Your firewall is blocking mitmproxy's outbound connections. Allow Python through:
+
+*Windows* — run in PowerShell as Administrator:
+```powershell
+New-NetFirewallRule -DisplayName "Python Interceptor" -Direction Outbound -Program (Get-Command python).Source -Action Allow
+```
+
+*Linux (ufw)*:
+```bash
+sudo ufw allow out 443
+sudo ufw allow out 80
+```
+
+**VPN or browser extension overrides the proxy (rules not applied)**
+→ Chrome extensions that use the `chrome.proxy` API override the system proxy, so Interceptor can't intercept Chrome traffic while the extension is active. Options:
+- Use a **system-level VPN app** (not a Chrome extension) — system VPNs work at the network layer and Chrome still respects the system proxy on top.
+- Launch Chrome with a forced proxy flag (bypasses extension proxy override):
+
+*macOS/Linux:*
+```bash
+open -a "Google Chrome" --args --proxy-server="http://127.0.0.1:8080"
+```
+*Windows:*
+```cmd
+chrome.exe --proxy-server="http://127.0.0.1:8080"
+```
+
+**Proxy stops intercepting after adding a new rule**
+→ After adding or enabling a rule, stop and restart the proxy from the Setup tab. The proxy only reads the rule list (and builds the host intercept list) at startup.
+
 **Linux: system proxy not set (non-GNOME desktop)**
 → KDE, XFCE, and others don't use gsettings. Set the proxy manually in your desktop's network settings, or export environment variables:
 ```bash

@@ -624,6 +624,13 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:14px
 .srv-cmd-label{font-size:11.5px;color:var(--fg2);font-weight:600}
 .srv-cmd-wrap{display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:8px 10px}
 .srv-cmd-pre{flex:1;font-family:var(--mono);font-size:11px;color:var(--fg2);white-space:pre;overflow-x:auto;margin:0}
+/* ── troubleshooting ── */
+.trbl-item{margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--bd)}
+.trbl-item:last-child{margin-bottom:0;padding-bottom:0;border-bottom:none}
+.trbl-title{font-size:12px;font-weight:600;margin-bottom:3px}
+.trbl-desc{font-size:11.5px;color:var(--fg2);margin-bottom:6px;line-height:1.5}
+.trbl-cmd-wrap{display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:7px 10px;margin-top:4px}
+.trbl-cmd-pre{flex:1;font-family:var(--mono);font-size:11px;color:var(--fg2);white-space:pre;overflow-x:auto;margin:0}
 @media(max-width:480px){
   .chk-item{grid-template-columns:22px 1fr;gap:10px}
   .chk-act{grid-column:2;margin-top:4px;align-items:flex-start}
@@ -886,6 +893,12 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:14px
         <button class="copy-btn" onclick="copySrvCmd('cmdRestart',this)">Copy</button>
       </div>
     </div>
+  </div>
+
+  <!-- Troubleshooting -->
+  <div class="srv-cmds" id="troubleshoot" style="margin-top:12px">
+    <div class="srv-cmds-title">Troubleshooting</div>
+    <div id="troubleshootList"></div>
   </div>
 </div>
 </div>
@@ -1223,6 +1236,69 @@ function renderStatus(){
   }
   document.getElementById('cmdKill').textContent=cmdKill;
   document.getElementById('cmdRestart').textContent=cmdRestart;
+
+  // Troubleshooting section — OS-aware
+  const troubles=[];
+  if(sys==='Windows'){
+    troubles.push({
+      title:'502 Bad Gateway / WinError 1225',
+      desc:'Windows Firewall may be blocking mitmproxy\'s outbound connections. Allow Python through the firewall:',
+      cmd:`New-NetFirewallRule -DisplayName "Python Interceptor" -Direction Outbound -Program (Get-Command python).Source -Action Allow`,
+      note:'Run in PowerShell as Administrator'
+    });
+    troubles.push({
+      title:'Proxy not intercepting after adding rules',
+      desc:'Stop and restart the proxy from this page so it picks up the updated rule list and rebuilds the intercept host list.',
+      cmd:null
+    });
+  } else if(sys==='Linux'){
+    troubles.push({
+      title:'502 Bad Gateway / Connection refused',
+      desc:'Your firewall may be blocking mitmproxy\'s outbound connections. Allow them:',
+      cmd:`sudo ufw allow out 443\nsudo ufw allow out 80`,
+      note:'For ufw — skip if not using ufw'
+    });
+    troubles.push({
+      title:'Certificate not trusted after install',
+      desc:'Some apps bundle their own CA store (Chrome, Firefox). Trust the cert inside the app too:',
+      cmd:`# Firefox: about:preferences#privacy → View Certificates → Import\n# Chrome: chrome://settings/certificates → Authorities → Import`,
+      note:null
+    });
+  } else {
+    troubles.push({
+      title:'TLS handshake failed after cert install',
+      desc:'Fully quit and reopen the browser — macOS TLS trust cache isn\'t updated until the app restarts.',
+      cmd:null
+    });
+    troubles.push({
+      title:'Certificate shows OK but interception still fails',
+      desc:'Verify real trust status (not just keychain presence):',
+      cmd:`security verify-cert -c ~/.mitmproxy/mitmproxy-ca-cert.pem -p ssl`,
+      note:'Must print "...OK" — if not, click Install Certificate again'
+    });
+  }
+  // Common to all platforms
+  troubles.push({
+    title:'VPN or browser extension overrides proxy',
+    desc:'Chrome extensions using chrome.proxy API override the system proxy. Use a system-level VPN app instead, or launch Chrome with a forced proxy flag:',
+    cmd:sys==='Windows'
+      ? `chrome.exe --proxy-server="http://127.0.0.1:${ST.proxy_port||8080}"`
+      : `open -a "Google Chrome" --args --proxy-server="http://127.0.0.1:${ST.proxy_port||8080}"`,
+    note:'This bypasses the extension\'s proxy override'
+  });
+
+  const tEl=document.getElementById('troubleshootList');
+  tEl.innerHTML=troubles.map(t=>`
+    <div class="trbl-item">
+      <div class="trbl-title">${esc(t.title)}</div>
+      <div class="trbl-desc">${esc(t.desc)}</div>
+      ${t.cmd?`<div class="trbl-cmd-wrap">
+        <pre class="trbl-cmd-pre">${esc(t.cmd)}</pre>
+        <button class="copy-btn" onclick="navigator.clipboard.writeText(this.closest('.trbl-cmd-wrap').querySelector('.trbl-cmd-pre').textContent);this.textContent='✓';setTimeout(()=>this.textContent='Copy',1800)">Copy</button>
+      </div>`:''}
+      ${t.note?`<div style="font-size:10.5px;color:var(--fg3);margin-top:4px">${esc(t.note)}</div>`:''}
+    </div>`).join('');
+
 
   // manual fallback commands
   const port=ST.proxy_port||8080;
