@@ -42,6 +42,11 @@ PORT_HINT  = 8080
 SCRIPT_DIR = Path(__file__).parent
 RULES_FILE = SCRIPT_DIR / "rules.json"
 
+# Prevent mitmproxy's own outbound connections from looping back through
+# the system proxy it just set (causes 502 on Windows).
+os.environ.setdefault("NO_PROXY", "localhost,127.0.0.1")
+os.environ.setdefault("no_proxy", "localhost,127.0.0.1")
+
 # ─── dependency bootstrap ─────────────────────────────────────────────────────
 
 def _pip(*pkgs):
