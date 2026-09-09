@@ -200,6 +200,20 @@ def _do_redirect(flow: http.HTTPFlow, to: str, name: str):
     if to and "://" not in to:
         to = "https://" + to
     p = urllib.parse.urlparse(to)
+
+    # Browser navigations (Sec-Fetch-Mode: navigate) use HTTP/2, and rewriting
+    # the upstream host mid-stream causes H2 PROTOCOL_ERROR (stream reset by client).
+    # Issue a 302 instead — the browser follows it seamlessly.
+    # API/XHR calls don't send Sec-Fetch-Mode: navigate, so they continue to use
+    # the transparent proxy path (host rewrite) which keeps the redirect invisible
+    # to the calling code.
+    if flow.request.headers.get("sec-fetch-mode") == "navigate":
+        flow.response = http.Response.make(
+            302, b"",
+            {"Location": to, "Content-Length": "0"},
+        )
+        return
+
     flow.request.scheme = p.scheme
     flow.request.host   = p.hostname
     flow.request.port   = p.port or (443 if p.scheme == "https" else 80)
