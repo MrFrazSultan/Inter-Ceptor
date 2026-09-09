@@ -68,6 +68,15 @@ except ImportError:
 log = logging.getLogger("req-red")
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
+class _H2NoiseFilter(logging.Filter):
+    """Suppress mitmproxy H2 race-condition noise (e.g. PING on closed conn)."""
+    _SKIP = ("RECV_PING", "ConnectionState.CLOSED", "Invalid input ConnectionInputs")
+    def filter(self, record):
+        msg = record.getMessage()
+        return not any(s in msg for s in self._SKIP)
+
+logging.getLogger("mitmproxy").addFilter(_H2NoiseFilter())
+
 # ─── rule schema migration ────────────────────────────────────────────────────
 
 _KIND_MAP = {
@@ -201,27 +210,34 @@ def _do_redirect(flow: http.HTTPFlow, to: str, name: str):
         to = "https://" + to
     p = urllib.parse.urlparse(to)
 
-    # Browser navigations (Sec-Fetch-Mode: navigate) use HTTP/2, and rewriting
-    # the upstream host mid-stream causes H2 PROTOCOL_ERROR (stream reset by client).
-    # Issue a 302 instead — the browser follows it seamlessly.
-    # API/XHR calls don't send Sec-Fetch-Mode: navigate, so they continue to use
-    # the transparent proxy path (host rewrite) which keeps the redirect invisible
-    # to the calling code.
-    if flow.request.headers.get("sec-fetch-mode") == "navigate":
+    dest_host = p.hostname or ""
+
+    # Cross-host redirect: always respond with HTTP 307 (preserves method).
+    #
+    # Transparent host-rewriting across H2 connections causes PROTOCOL_ERROR
+    # (stream reset, PING on closed conn) because mitmproxy must bridge two
+    # independent H2 connections with different SETTINGS/flow-control state.
+    # This affects navigations, sub-resource fetches, and any multiplexed
+    # stream on the same H2 connection — so the fix applies to ALL requests,
+    # not just Sec-Fetch-Mode: navigate.
+    #
+    # 307 (vs 302) preserves the HTTP method for POST/PUT/PATCH API calls.
+    if dest_host and dest_host != flow.request.host:
         flow.response = http.Response.make(
-            302, b"",
+            307, b"",
             {"Location": to, "Content-Length": "0"},
         )
         return
 
-    flow.request.scheme = p.scheme
-    flow.request.host   = p.hostname
+    # Same-host path/scheme rewrite: transparent proxy is safe.
+    flow.request.scheme = p.scheme or flow.request.scheme
+    flow.request.host   = dest_host or flow.request.host
     flow.request.port   = p.port or (443 if p.scheme == "https" else 80)
     path = p.path or "/"
     if p.query:
         path += "?" + p.query
     flow.request.path = path
-    flow.request.headers["host"] = p.netloc
+    flow.request.headers["host"] = p.netloc or flow.request.host
 
 def _do_block(flow: http.HTTPFlow):
     flow.response = http.Response.make(
