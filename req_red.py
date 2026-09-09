@@ -27,6 +27,12 @@ import signal
 import socket
 import subprocess
 import sys
+
+# Force UTF-8 stdout/stderr on Windows so box-drawing characters don't crash cp1252
+if sys.platform == "win32":
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 import time
 import urllib.parse
 from pathlib import Path
