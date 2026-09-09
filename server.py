@@ -261,13 +261,20 @@ def _gen_cert_bg():
     _emit("Generating CA cert — starting proxy briefly…","info")
     p=subprocess.Popen([sys.executable,str(REQ_RED),"--no-system-proxy"],
                        stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+    # Windows needs more time: mitmproxy imports are slow on first run (10-15s typical)
+    timeout = 45 if SYSTEM=="Windows" else 20
     t=time.time()
-    while time.time()-t<8:
+    while time.time()-t<timeout:
         if CERT_PATH.exists(): break
-        time.sleep(0.3)
-    p.terminate(); p.wait()
+        if p.poll() is not None:  # process crashed — no point waiting further
+            out=p.stdout.read().decode("utf-8",errors="replace")
+            _emit(f"Cert process exited early (code {p.returncode}). Output: {out[:300]}","err")
+            break
+        time.sleep(0.5)
+    try: p.terminate(); p.wait(timeout=5)
+    except Exception: pass
     if CERT_PATH.exists(): _emit(f"CA cert generated at {CERT_PATH}","ok")
-    else: _emit("Cert generation timed out.","err")
+    else: _emit("Cert generation timed out. Try running: python req_red.py --no-system-proxy (wait 10s then Ctrl+C)","err")
 
 def _install_cert():
     if not CERT_PATH.exists():
