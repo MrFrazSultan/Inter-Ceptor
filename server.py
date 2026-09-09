@@ -404,6 +404,38 @@ def api_cert_install():
     _emit(f"[cert] {msg}","ok" if ok else "err")
     return jsonify({"ok":ok,"msg":msg})
 
+@app.route("/api/firewall/fix",methods=["POST"])
+def api_firewall_fix():
+    if SYSTEM=="Windows":
+        py=sys.executable.replace("'","`'")
+        # Write a .ps1 that adds the rule, elevated via UAC
+        import tempfile,stat as _st
+        with tempfile.NamedTemporaryFile(mode='w',suffix='.ps1',delete=False) as f:
+            f.write(f'New-NetFirewallRule -DisplayName "Python Interceptor" '
+                    f'-Direction Outbound -Program "{py}" -Action Allow -ErrorAction SilentlyContinue\n')
+            f.write(f'New-NetFirewallRule -DisplayName "Python Interceptor (Inbound)" '
+                    f'-Direction Inbound -Program "{py}" -Action Allow -ErrorAction SilentlyContinue\n')
+            f.write('Write-Host "Done. You can close this window."\nRead-Host\n')
+            ps1=f.name
+        subprocess.Popen(["powershell","-NoProfile","-Command",
+            f'Start-Process powershell -ArgumentList \'-NoProfile -ExecutionPolicy Bypass -File "{ps1}"\' -Verb RunAs'])
+        return jsonify({"ok":True,"msg":"UAC prompt opened — accept it to allow Python through the firewall."})
+    if SYSTEM=="Linux":
+        import tempfile,stat as _st,shutil as _sh
+        with tempfile.NamedTemporaryFile(mode='w',suffix='.sh',delete=False) as f:
+            f.write('#!/bin/bash\n')
+            f.write('sudo ufw allow out 443/tcp\n')
+            f.write('sudo ufw allow out 80/tcp\n')
+            f.write('echo\necho "Done — press Enter to close."\nread\n')
+            sh=f.name
+        os.chmod(sh,0o755)
+        terms=[["x-terminal-emulator","-e","bash",sh],["gnome-terminal","--","bash",sh],
+               ["konsole","-e","bash",sh],["xterm","-e","bash",sh]]
+        for t in terms:
+            if _sh.which(t[0]): subprocess.Popen(t); break
+        return jsonify({"ok":True,"msg":"Terminal opened — enter your password to allow firewall ports."})
+    return jsonify({"ok":False,"msg":"Not needed on this platform."})
+
 @app.route("/api/proxy/start",methods=["POST"])
 def api_proxy_start():
     ok,msg=_start_proxy(); return jsonify({"ok":ok,"msg":msg})
@@ -1250,9 +1282,9 @@ function renderStatus(){
   if(sys==='Windows'){
     troubles.push({
       title:'502 Bad Gateway / WinError 1225',
-      desc:'Windows Firewall may be blocking mitmproxy\'s outbound connections. Allow Python through the firewall:',
-      cmd:`New-NetFirewallRule -DisplayName "Python Interceptor" -Direction Outbound -Program (Get-Command python).Source -Action Allow`,
-      note:'Run in PowerShell as Administrator'
+      desc:'Windows Firewall may be blocking mitmproxy\'s outbound connections.',
+      btn:{label:'Allow Python through Firewall',action:'fixFirewall'},
+      note:'Opens a UAC prompt — click Yes to add the firewall rule'
     });
     troubles.push({
       title:'Proxy not intercepting after adding rules',
@@ -1262,9 +1294,9 @@ function renderStatus(){
   } else if(sys==='Linux'){
     troubles.push({
       title:'502 Bad Gateway / Connection refused',
-      desc:'Your firewall may be blocking mitmproxy\'s outbound connections. Allow them:',
-      cmd:`sudo ufw allow out 443\nsudo ufw allow out 80`,
-      note:'For ufw — skip if not using ufw'
+      desc:'Your firewall (ufw) may be blocking mitmproxy\'s outbound connections.',
+      btn:{label:'Allow Firewall Ports',action:'fixFirewall'},
+      note:'Opens a terminal with sudo ufw commands — enter your password there'
     });
     troubles.push({
       title:'Certificate not trusted after install',
@@ -1300,12 +1332,14 @@ function renderStatus(){
     <div class="trbl-item">
       <div class="trbl-title">${esc(t.title)}</div>
       <div class="trbl-desc">${esc(t.desc)}</div>
+      ${t.btn?`<button class="btn btn-ac btn-sm" style="margin-top:6px" onclick="${esc(t.btn.action)}(this)">${esc(t.btn.label)}</button>`:''}
       ${t.cmd?`<div class="trbl-cmd-wrap">
         <pre class="trbl-cmd-pre">${esc(t.cmd)}</pre>
         <button class="copy-btn" onclick="navigator.clipboard.writeText(this.closest('.trbl-cmd-wrap').querySelector('.trbl-cmd-pre').textContent);this.textContent='✓';setTimeout(()=>this.textContent='Copy',1800)">Copy</button>
       </div>`:''}
       ${t.note?`<div style="font-size:10.5px;color:var(--fg3);margin-top:4px">${esc(t.note)}</div>`:''}
     </div>`).join('');
+
 
 
   // manual fallback commands
@@ -1377,6 +1411,15 @@ async function copyCmd(btn){
     await navigator.clipboard.writeText(pre.textContent);
     btn.textContent='✓ Copied';setTimeout(()=>btn.textContent='Copy',1800);
   }catch{btn.textContent='Copy';}
+}
+async function fixFirewall(btn){
+  btn.disabled=true;btn.textContent='Opening…';
+  try{
+    const r=await(await fetch('/api/firewall/fix',{method:'POST'})).json();
+    btn.textContent=r.ok?'Done ✓':'Failed';
+    if(r.msg) alert(r.msg);
+    setTimeout(()=>{btn.disabled=false;btn.textContent=btn.dataset.label||'Allow Python through Firewall';},3000);
+  }catch{btn.disabled=false;btn.textContent='Error';}
 }
 async function copySrvCmd(id,btn){
   const pre=document.getElementById(id);
