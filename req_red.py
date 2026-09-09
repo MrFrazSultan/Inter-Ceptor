@@ -284,8 +284,29 @@ def _emit_request(flow: http.HTTPFlow, rule: Optional[dict], action_type: str,
 # ─── mitmproxy addon ──────────────────────────────────────────────────────────
 
 class ReqRedAddon:
-    def __init__(self, rules: List[dict]):
-        self.rules = rules
+    def __init__(self, rules: List[dict], port: int, use_sys: bool):
+        self.rules   = rules
+        self.port    = port
+        self.use_sys = use_sys
+        self._proxy_set = False
+
+    def running(self):
+        """Called by mitmproxy once it is fully bound and listening."""
+        if self.use_sys:
+            try:
+                set_system_proxy(self.port)
+                self._proxy_set = True
+            except Exception as e:
+                print(f"Warning: could not set system proxy: {e}")
+
+    def done(self):
+        """Called by mitmproxy on clean shutdown."""
+        if self._proxy_set:
+            try:
+                unset_system_proxy()
+                self._proxy_set = False
+            except Exception:
+                pass
 
     def request(self, flow: http.HTTPFlow) -> None:
         for rule in self.rules:
@@ -443,16 +464,16 @@ def install_ca_cert():
 
 # ─── runner ───────────────────────────────────────────────────────────────────
 
-async def _run(port: int, allow_hosts: List[str]):
+async def _run(port: int, allow_hosts: List[str], use_sys: bool):
     opts = Options(
         listen_host="0.0.0.0",
         listen_port=port,
         ssl_insecure=True,
-        allow_hosts=allow_hosts or ["^$"],  # block nothing if empty
+        allow_hosts=allow_hosts or ["^$"],
     )
     master = DumpMaster(opts, with_termlog=True, with_dumper=False)
     rules  = load_rules()
-    master.addons.add(ReqRedAddon(rules))
+    master.addons.add(ReqRedAddon(rules, port, use_sys))
     try:
         await master.run()
     except KeyboardInterrupt:
@@ -487,21 +508,20 @@ def main():
         allow_hosts = ["^$"]  # matches no host; safe to run
 
     use_sys = not args.no_system_proxy
-    if use_sys:
-        try:
-            set_system_proxy(port)
-        except Exception as e:
-            print(f"Warning: could not set system proxy: {e}")
-            use_sys = False
 
+    # Emergency cleanup — unset proxy if process is killed before done() fires
     def _cleanup():
-        if use_sys: unset_system_proxy()
+        try: unset_system_proxy()
+        except Exception: pass
     atexit.register(_cleanup)
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: (_cleanup(), sys.exit(0)))
 
     _banner(port, all_rules, allow_hosts)
-    asyncio.run(_run(port, allow_hosts))
+    # System proxy is set inside ReqRedAddon.running() — only after mitmproxy
+    # confirms it is bound and listening, so a crash before that point never
+    # leaves a dead proxy entry in the OS network settings.
+    asyncio.run(_run(port, allow_hosts, use_sys))
 
 if __name__ == "__main__":
     main()

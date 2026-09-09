@@ -209,6 +209,14 @@ def _stream(proc):
     proc.wait()
     _emit(f"[proxy] exited (code {proc.returncode})","info")
     with _proxy_lock: _proxy_proc=None
+    # Safety net: if the proxy crashed without running its atexit/done() handler,
+    # the OS system proxy would still point at a dead port (no internet).
+    # Force-unset it here from the server side.
+    try:
+        subprocess.run([sys.executable, str(REQ_RED), "--unset-proxy"],
+                       timeout=5, capture_output=True)
+    except Exception:
+        pass
 
 def _start_proxy():
     global _proxy_proc,_proxy_port
