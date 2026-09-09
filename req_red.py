@@ -197,6 +197,8 @@ def extract_allow_hosts(rules: List[dict]) -> List[str]:
 # ─── actions ──────────────────────────────────────────────────────────────────
 
 def _do_redirect(flow: http.HTTPFlow, to: str, name: str):
+    if to and "://" not in to:
+        to = "https://" + to
     p = urllib.parse.urlparse(to)
     flow.request.scheme = p.scheme
     flow.request.host   = p.hostname
