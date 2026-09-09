@@ -212,24 +212,25 @@ def _do_redirect(flow: http.HTTPFlow, to: str, name: str):
 
     dest_host = p.hostname or ""
 
-    # Cross-host redirect: always respond with HTTP 307 (preserves method).
+    # Browser top-level navigations need an HTTP redirect, not transparent
+    # host-rewriting. Rewriting the host across H2 connections causes
+    # PROTOCOL_ERROR (stream reset / PING on closed conn) because mitmproxy
+    # must bridge two H2 connections with different SETTINGS/flow-control.
     #
-    # Transparent host-rewriting across H2 connections causes PROTOCOL_ERROR
-    # (stream reset, PING on closed conn) because mitmproxy must bridge two
-    # independent H2 connections with different SETTINGS/flow-control state.
-    # This affects navigations, sub-resource fetches, and any multiplexed
-    # stream on the same H2 connection — so the fix applies to ALL requests,
-    # not just Sec-Fetch-Mode: navigate.
-    #
-    # 307 (vs 302) preserves the HTTP method for POST/PUT/PATCH API calls.
-    if dest_host and dest_host != flow.request.host:
+    # Sec-Fetch-Mode: navigate is the correct discriminator — it is only sent
+    # by browsers for top-level navigations, never for XHR / fetch / preflight.
+    # Those requests MUST use transparent proxy: browsers block 3xx redirects
+    # on CORS preflight (OPTIONS) and cross-origin fetch, causing ERR_INVALID_REDIRECT.
+    if dest_host and dest_host != flow.request.host \
+            and flow.request.headers.get("sec-fetch-mode") == "navigate":
         flow.response = http.Response.make(
             307, b"",
             {"Location": to, "Content-Length": "0"},
         )
         return
 
-    # Same-host path/scheme rewrite: transparent proxy is safe.
+    # XHR / fetch / sub-resources / same-host rewrites: transparent proxy.
+    # H2 sub-resource noise (PING on closed conn) is suppressed by _H2NoiseFilter.
     flow.request.scheme = p.scheme or flow.request.scheme
     flow.request.host   = dest_host or flow.request.host
     flow.request.port   = p.port or (443 if p.scheme == "https" else 80)
